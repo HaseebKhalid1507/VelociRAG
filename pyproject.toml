@@ -1,0 +1,63 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "velocirag"
+version = "0.1.0"
+description = "Progressive multi-layer RAG engine for markdown knowledge bases"
+readme = "README.md"
+license = {file = "LICENSE"}
+requires-python = ">=3.10"
+authors = [
+    {name = "Haseeb Khalid"},
+]
+keywords = ["rag", "search", "embeddings", "faiss", "knowledge-base", "markdown"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Topic :: Text Processing :: Indexing",
+]
+
+dependencies = [
+    "numpy>=1.24",
+    "faiss-cpu>=1.7.4",
+    "sentence-transformers>=2.2",
+    "python-frontmatter>=1.0",
+    "click>=8.0",
+]
+
+[project.optional-dependencies]
+graph = [
+    "networkx>=3.0",
+    "scikit-learn>=1.0",
+]
+dev = [
+    "pytest>=7.0",
+    "pytest-cov>=4.0",
+    "ruff>=0.1",
+]
+
+[project.scripts]
+velocirag = "velocirag.cli:cli"
+
+[project.urls]
+Homepage = "https://github.com/haseebk/velocirag"
+Repository = "https://github.com/haseebk/velocirag"
+Issues = "https://github.com/haseebk/velocirag/issues"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
