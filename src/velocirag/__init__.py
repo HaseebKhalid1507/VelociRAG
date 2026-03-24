@@ -1,6 +1,6 @@
-"""Velociragtor — Progressive multi-layer RAG engine for markdown knowledge bases."""
+"""Velocirag — Progressive multi-layer RAG engine for markdown knowledge bases."""
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 
 from .chunker import chunk_markdown
 from .variants import generate_variants
@@ -16,3 +16,4 @@ from .analyzers import (
 )
 from .pipeline import GraphPipeline
 from .unified import UnifiedSearch
+from .abstracts import AbstractGenerator, AbstractResult

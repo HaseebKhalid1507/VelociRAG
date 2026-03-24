@@ -84,7 +84,7 @@ class TestConstructorAndSetup:
             # Check documents table
             cursor.execute("PRAGMA table_info(documents)")
             columns = {row[1] for row in cursor.fetchall()}
-            assert columns == {'id', 'doc_id', 'content', 'metadata', 'embedding', 'faiss_idx', 'created'}
+            assert columns == {'id', 'doc_id', 'content', 'metadata', 'embedding', 'faiss_idx', 'created', 'l0_abstract', 'l1_overview', 'l0_embedding', 'l1_embedding'}
             
             # Check file_cache table
             cursor.execute("PRAGMA table_info(file_cache)")

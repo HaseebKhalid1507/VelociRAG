@@ -84,7 +84,30 @@ class Searcher:
         include_stats: bool = False
     ) -> Dict[str, Any]:
         """
-        Execute complete search pipeline with query variants and RRF fusion.
+        Execute search pipeline. Auto-detects progressive vs standard search.
+        
+        Args:
+            query: Search query string
+            limit: Maximum results to return
+            threshold: Minimum similarity score threshold
+            include_stats: Include performance statistics
+            
+        Returns:
+            Dictionary with results, query, timing, and variant information
+        """
+        # Standard search by default — progressive is opt-in via search_progressive()
+        # At <10K docs, L2 direct search is fast enough and more accurate
+        return self._search_standard(query, limit, threshold, include_stats)
+
+    def _search_standard(
+        self,
+        query: str,
+        limit: int = DEFAULT_SEARCH_LIMIT,
+        threshold: float = DEFAULT_SIMILARITY_THRESHOLD,
+        include_stats: bool = False
+    ) -> Dict[str, Any]:
+        """
+        Execute standard search pipeline with query variants and RRF fusion.
         
         Args:
             query: Search query string
@@ -113,6 +136,7 @@ class Searcher:
                 'results': [],
                 'query': query,
                 'total_results': 0,
+                'search_mode': 'standard',
                 'search_time_ms': 0.0,
                 'variants_used': [],
                 'stats': {} if include_stats else None
@@ -126,6 +150,7 @@ class Searcher:
                 'results': [],
                 'query': query,
                 'total_results': 0,
+                'search_mode': 'standard',
                 'search_time_ms': round((time.time() - start_time) * 1000, TIMING_PRECISION),
                 'variants_used': [],
                 'stats': {} if include_stats else None
@@ -282,6 +307,7 @@ class Searcher:
                 'results': final_results,
                 'query': query,
                 'total_results': len(final_results),
+                'search_mode': 'standard',
                 'search_time_ms': round(total_search_time, TIMING_PRECISION),
                 'variants_used': variants
             }
@@ -427,3 +453,134 @@ class Searcher:
                 deduplicated.append(result)
         
         return deduplicated
+    
+    def search_progressive(self, query: str, limit: int = 5, threshold: float = 0.3,
+                           l0_candidates: int = 50, l1_candidates: int = 20) -> Dict[str, Any]:
+        """
+        Progressive search: L0 → L1 → L2 → rerank
+        
+        1. Embed query
+        2. Search L0 index (wide net → l0_candidates results)
+        3. Search L1 index for L0 candidates (narrow → l1_candidates)
+        4. Load full L2 content for L1 candidates
+        5. Rerank → final results
+        
+        Args:
+            query: Search query string
+            limit: Final number of results to return
+            threshold: Minimum similarity threshold
+            l0_candidates: Number of L0 candidates to retrieve
+            l1_candidates: Number of L1 candidates to retrieve
+            
+        Returns:
+            Search results with progressive stats
+        """
+        start_time = time.time()
+        
+        # Validate input
+        if not isinstance(query, str) or not query.strip():
+            return {
+                'results': [],
+                'query': query,
+                'total_results': 0,
+                'search_mode': 'progressive',
+                'search_time_ms': 0.0,
+                'progressive_stats': {'l0_candidates': 0, 'l1_candidates': 0, 'l2_loaded': 0}
+            }
+        
+        query = query.strip()
+        
+        # Step 1: Generate variants
+        if len(query) >= SINGLE_VARIANT_THRESHOLD:
+            variants = generate_variants(query)
+        else:
+            variants = [query]
+        
+        if not variants:
+            variants = [query]
+        
+        # Step 2: L0 wide net — search abstract index
+        l0_results = {}
+        for variant in variants:
+            try:
+                q_emb = self.embedder.embed(variant)
+                if q_emb.ndim > 1:
+                    q_emb = q_emb[0]
+                q_norm = q_emb / np.linalg.norm(q_emb)
+                hits = self.store.search_l0(q_norm, limit=l0_candidates)
+                for hit in hits:
+                    doc_id = hit['doc_id']
+                    if doc_id not in l0_results or hit['similarity'] > l0_results[doc_id]['similarity']:
+                        l0_results[doc_id] = hit
+            except Exception as e:
+                logger.warning(f"L0 search failed for variant '{variant}': {e}")
+        
+        # Sort by similarity, take top l0_candidates
+        l0_sorted = sorted(l0_results.values(), key=lambda x: x['similarity'], reverse=True)[:l0_candidates]
+        
+        # Step 3: L1 rerank — search overview index for L0 candidates only
+        l1_results = {}
+        l0_doc_ids = {r['doc_id'] for r in l0_sorted}
+        for variant in variants:
+            try:
+                q_emb = self.embedder.embed(variant)
+                if q_emb.ndim > 1:
+                    q_emb = q_emb[0]
+                q_norm = q_emb / np.linalg.norm(q_emb)
+                hits = self.store.search_l1(q_norm, limit=l1_candidates * 2, doc_ids=l0_doc_ids)
+                for hit in hits:
+                    doc_id = hit['doc_id']
+                    if doc_id not in l1_results or hit['similarity'] > l1_results[doc_id]['similarity']:
+                        l1_results[doc_id] = hit
+            except Exception as e:
+                logger.warning(f"L1 search failed for variant '{variant}': {e}")
+        
+        l1_sorted = sorted(l1_results.values(), key=lambda x: x['similarity'], reverse=True)[:l1_candidates]
+        
+        # Step 4: L2 load — get full content for L1 candidates
+        l2_results = []
+        for l1_hit in l1_sorted:
+            doc = self.store.get(l1_hit['doc_id'])
+            if doc:
+                doc['similarity'] = l1_hit['similarity']
+                l2_results.append(doc)
+        
+        # Step 5: Dedup by file
+        l2_results = self._deduplicate_by_file(l2_results)
+        
+        # Step 6: Rerank
+        if self.reranker:
+            try:
+                reranked = self.reranker(query, l2_results)
+                
+                # Blend scores like in standard search
+                for result in reranked:
+                    meta = result.get('metadata', {})
+                    rerank_score = meta.get('rerank_score', 0)
+                    cosine_sim = result.get('similarity', 0)
+                    
+                    # Normalize rerank score
+                    norm_rerank = 1.0 / (1.0 + 2.718 ** (-rerank_score))
+                    
+                    # Blended score: 70% cosine + 30% rerank for progressive
+                    blended = (0.7 * cosine_sim) + (0.3 * norm_rerank)
+                    meta['blended_score'] = round(blended, 4)
+                
+                # Sort by blended score
+                l2_results = sorted(reranked, key=lambda r: r.get('metadata', {}).get('blended_score', 0), reverse=True)
+            except Exception as e:
+                logger.warning(f"Progressive reranking failed: {e}")
+        
+        # Step 7: Return
+        return {
+            'results': l2_results[:limit],
+            'query': query,
+            'total_results': len(l2_results[:limit]),
+            'search_mode': 'progressive',
+            'search_time_ms': (time.time() - start_time) * 1000,
+            'progressive_stats': {
+                'l0_candidates': len(l0_sorted),
+                'l1_candidates': len(l1_sorted),
+                'l2_loaded': len(l2_results),
+            }
+        }

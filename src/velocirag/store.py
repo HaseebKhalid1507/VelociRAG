@@ -25,7 +25,7 @@ from .chunker import chunk_markdown
 from .embedder import Embedder
 
 # Constants
-CURRENT_SCHEMA_VERSION = 1
+CURRENT_SCHEMA_VERSION = 2
 DEFAULT_EMBEDDING_DIMENSIONS = 384
 BATCH_REBUILD_THRESHOLD = 50
 
@@ -60,7 +60,7 @@ class VectorStore:
     - Atomic transactions and proper error handling
     """
 
-    def __init__(self, db_path: str, embedder: Optional[Embedder] = None):
+    def __init__(self, db_path: str, embedder: Optional[Embedder] = None, abstract_generator=None):
         """
         Initialize vector store.
         
@@ -68,19 +68,25 @@ class VectorStore:
             db_path: Directory path for storage files
             embedder: Optional embedder instance. If None, store can still 
                      handle pre-computed embeddings but not add_directory()
+            abstract_generator: Optional AbstractGenerator instance for L0/L1 generation
         """
         self.db_path = Path(db_path)
         self.db_path.mkdir(parents=True, exist_ok=True)
         
         self.embedder = embedder
+        self.abstract_generator = abstract_generator
         self.sqlite_path = self.db_path / "store.db"
         self.faiss_path = self.db_path / "index.faiss"
+        self.faiss_l0_path = self.db_path / "index_l0.faiss"
+        self.faiss_l1_path = self.db_path / "index_l1.faiss"
         
         # State tracking
         self._index_dirty = False
         self._auto_rebuild = True
         self._dimensions = None
         self._faiss_index = None
+        self._faiss_l0_index = None
+        self._faiss_l1_index = None
         
         # Initialize storage
         self._init_sqlite()
@@ -150,14 +156,31 @@ class VectorStore:
                 # Normalize for cosine similarity
                 embedding = self._normalize_embedding(embedding)
                 
+                # Generate L0/L1 abstracts if generator is available
+                l0_abstract = None
+                l1_overview = None
+                l0_blob = None
+                l1_blob = None
+                
+                if self.abstract_generator:
+                    try:
+                        abstract_result = self.abstract_generator.generate(content, metadata=metadata)
+                        l0_abstract = abstract_result.l0_abstract
+                        l1_overview = abstract_result.l1_overview
+                        l0_blob = abstract_result.l0_embedding.astype(np.float32).tobytes()
+                        l1_blob = abstract_result.l1_embedding.astype(np.float32).tobytes()
+                    except Exception as e:
+                        logger.warning(f"Failed to generate abstracts for doc {doc_id}: {e}")
+                
                 # Store in SQLite
                 embedding_blob = embedding.astype(np.float32).tobytes()
                 metadata_json = json.dumps(metadata)
                 
                 conn.execute('''
-                    INSERT OR REPLACE INTO documents (doc_id, content, metadata, embedding)
-                    VALUES (?, ?, ?, ?)
-                ''', (doc_id, content, metadata_json, embedding_blob))
+                    INSERT OR REPLACE INTO documents 
+                    (doc_id, content, metadata, embedding, l0_abstract, l1_overview, l0_embedding, l1_embedding)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                ''', (doc_id, content, metadata_json, embedding_blob, l0_abstract, l1_overview, l0_blob, l1_blob))
 
         self._index_dirty = True
         
@@ -248,6 +271,30 @@ class VectorStore:
                     
                     # Add all chunks for this file
                     self.add_documents(documents)
+                    
+                    # Generate L0/L1 abstracts if generator is available
+                    if self.abstract_generator:
+                        try:
+                            doc_ids = [doc['doc_id'] for doc in documents]
+                            contents = [doc['content'] for doc in documents]
+                            metadatas = [doc.get('metadata', {}) for doc in documents]
+                            abstract_results = self.abstract_generator.generate_batch(contents, metadatas=metadatas)
+                            
+                            # Update documents with abstracts
+                            with self._transaction() as conn:
+                                for doc_id, result in zip(doc_ids, abstract_results):
+                                    l0_blob = result.l0_embedding.astype(np.float32).tobytes()
+                                    l1_blob = result.l1_embedding.astype(np.float32).tobytes()
+                                    
+                                    conn.execute('''
+                                        UPDATE documents SET 
+                                        l0_abstract = ?, l1_overview = ?,
+                                        l0_embedding = ?, l1_embedding = ?
+                                        WHERE doc_id = ?
+                                    ''', (result.l0_abstract, result.l1_overview, l0_blob, l1_blob, doc_id))
+                        except Exception as e:
+                            logger.warning(f"Failed to generate abstracts for {rel_path}: {e}")
+                    
                     stats['chunks_added'] += len(documents)
                     stats['files_processed'] += 1
                     
@@ -324,6 +371,88 @@ class VectorStore:
         
         return results
 
+    def search_l0(self, query_embedding: np.ndarray, limit: int = 10, doc_ids: Optional[set] = None) -> List[Dict]:
+        """Search L0 abstract index."""
+        if self._faiss_l0_index is None or self._faiss_l0_index.ntotal == 0:
+            return []
+        
+        # Normalize for cosine similarity
+        query_embedding = self._normalize_embedding(query_embedding)
+        query_embedding = query_embedding.reshape(1, -1).astype('float32')
+        
+        # Search FAISS L0 index
+        similarities, indices = self._faiss_l0_index.search(query_embedding, min(limit, self._faiss_l0_index.ntotal))
+        
+        # Get documents from SQLite - need to map L0 index positions to doc IDs
+        results = []
+        with sqlite3.connect(self.sqlite_path) as conn:
+            # Get documents that have L0 abstracts, in order
+            l0_docs = conn.execute('''
+                SELECT doc_id, l0_abstract FROM documents 
+                WHERE l0_abstract IS NOT NULL 
+                ORDER BY id
+            ''').fetchall()
+            
+            for similarity, l0_idx in zip(similarities[0], indices[0]):
+                if l0_idx < 0 or l0_idx >= len(l0_docs):
+                    continue
+                
+                doc_id, l0_abstract = l0_docs[l0_idx]
+                
+                # Filter by doc_ids if provided
+                if doc_ids and doc_id not in doc_ids:
+                    continue
+                
+                results.append({
+                    'doc_id': doc_id,
+                    'content': l0_abstract,
+                    'similarity': float(similarity),
+                    'l0_idx': int(l0_idx)
+                })
+        
+        return results
+
+    def search_l1(self, query_embedding: np.ndarray, limit: int = 10, doc_ids: Optional[set] = None) -> List[Dict]:
+        """Search L1 overview index."""
+        if self._faiss_l1_index is None or self._faiss_l1_index.ntotal == 0:
+            return []
+        
+        # Normalize for cosine similarity
+        query_embedding = self._normalize_embedding(query_embedding)
+        query_embedding = query_embedding.reshape(1, -1).astype('float32')
+        
+        # Search FAISS L1 index
+        similarities, indices = self._faiss_l1_index.search(query_embedding, min(limit, self._faiss_l1_index.ntotal))
+        
+        # Get documents from SQLite - need to map L1 index positions to doc IDs
+        results = []
+        with sqlite3.connect(self.sqlite_path) as conn:
+            # Get documents that have L1 overviews, in order
+            l1_docs = conn.execute('''
+                SELECT doc_id, l1_overview FROM documents 
+                WHERE l1_overview IS NOT NULL 
+                ORDER BY id
+            ''').fetchall()
+            
+            for similarity, l1_idx in zip(similarities[0], indices[0]):
+                if l1_idx < 0 or l1_idx >= len(l1_docs):
+                    continue
+                
+                doc_id, l1_overview = l1_docs[l1_idx]
+                
+                # Filter by doc_ids if provided
+                if doc_ids and doc_id not in doc_ids:
+                    continue
+                
+                results.append({
+                    'doc_id': doc_id,
+                    'content': l1_overview,
+                    'similarity': float(similarity),
+                    'l1_idx': int(l1_idx)
+                })
+        
+        return results
+
     def get(self, doc_id: str) -> Optional[Dict]:
         """Retrieve document by ID."""
         with sqlite3.connect(self.sqlite_path) as conn:
@@ -361,6 +490,73 @@ class VectorStore:
         
         return deleted
 
+    def generate_abstracts(self, generator = None, batch_size: int = 50) -> Dict[str, Any]:
+        """
+        Generate L0/L1 abstracts for documents that don't have them yet.
+        Post-hoc enrichment — can be run after initial indexing.
+        
+        Args:
+            generator: AbstractGenerator instance (uses self.abstract_generator if None)
+            batch_size: Number of documents to process in each batch
+            
+        Returns:
+            Dict with 'processed', 'skipped', 'errors' counts
+        """
+        if generator is None:
+            generator = self.abstract_generator
+        
+        if generator is None:
+            raise ValueError("No abstract generator provided")
+        
+        stats = {'processed': 0, 'skipped': 0, 'errors': 0}
+        
+        with sqlite3.connect(self.sqlite_path) as conn:
+            # Get documents without abstracts
+            rows = conn.execute('''
+                SELECT doc_id, content FROM documents 
+                WHERE l0_abstract IS NULL OR l1_overview IS NULL
+            ''').fetchall()
+        
+        if not rows:
+            return stats
+        
+        # Process in batches
+        for i in range(0, len(rows), batch_size):
+            batch = rows[i:i + batch_size]
+            
+            try:
+                # Extract content for batch generation
+                contents = [row[1] for row in batch]
+                doc_ids = [row[0] for row in batch]
+                
+                # Generate abstracts in batch
+                abstract_results = generator.generate_batch(contents)
+                
+                # Store results
+                with self._transaction() as conn:
+                    for doc_id, result in zip(doc_ids, abstract_results):
+                        l0_blob = result.l0_embedding.astype(np.float32).tobytes()
+                        l1_blob = result.l1_embedding.astype(np.float32).tobytes()
+                        
+                        conn.execute('''
+                            UPDATE documents SET 
+                            l0_abstract = ?, l1_overview = ?,
+                            l0_embedding = ?, l1_embedding = ?
+                            WHERE doc_id = ?
+                        ''', (result.l0_abstract, result.l1_overview, l0_blob, l1_blob, doc_id))
+                
+                stats['processed'] += len(batch)
+                
+            except Exception as e:
+                logger.error(f"Error generating abstracts for batch {i//batch_size + 1}: {e}")
+                stats['errors'] += len(batch)
+        
+        # Rebuild indices to include new L0/L1 data
+        if stats['processed'] > 0:
+            self.rebuild_index()
+        
+        return stats
+
     def count(self) -> int:
         """Return total number of documents."""
         with sqlite3.connect(self.sqlite_path) as conn:
@@ -368,31 +564,53 @@ class VectorStore:
             return result[0] if result else 0
 
     def rebuild_index(self) -> None:
-        """Rebuild FAISS index from SQLite embeddings."""
+        """Rebuild all FAISS indices from SQLite embeddings."""
         with sqlite3.connect(self.sqlite_path) as conn:
             # Get all embeddings in order
             rows = conn.execute('''
-                SELECT id, doc_id, embedding FROM documents ORDER BY id
+                SELECT id, doc_id, embedding, l0_embedding, l1_embedding FROM documents ORDER BY id
             ''').fetchall()
             
             if not rows:
                 # Empty database
                 if self._dimensions:
                     self._faiss_index = faiss.IndexFlatIP(self._dimensions)
+                    self._faiss_l0_index = faiss.IndexFlatIP(self._dimensions)
+                    self._faiss_l1_index = faiss.IndexFlatIP(self._dimensions)
                 else:
                     self._faiss_index = None
+                    self._faiss_l0_index = None
+                    self._faiss_l1_index = None
                 self._index_dirty = False
                 return
             
-            # Build new FAISS index
+            # Build new L2 (main) FAISS index
             embeddings = []
-            for row_id, doc_id, embedding_blob in rows:
+            l0_embeddings = []
+            l1_embeddings = []
+            
+            for row_id, doc_id, embedding_blob, l0_blob, l1_blob in rows:
+                # L2 (main) embedding
                 embedding = np.frombuffer(embedding_blob, dtype=np.float32)
                 embeddings.append(embedding)
+                
+                # L0 embedding if available
+                if l0_blob:
+                    l0_embedding = np.frombuffer(l0_blob, dtype=np.float32)
+                    l0_embeddings.append(l0_embedding)
+                else:
+                    l0_embeddings.append(None)
+                
+                # L1 embedding if available
+                if l1_blob:
+                    l1_embedding = np.frombuffer(l1_blob, dtype=np.float32)
+                    l1_embeddings.append(l1_embedding)
+                else:
+                    l1_embeddings.append(None)
             
             embeddings_array = np.array(embeddings).astype('float32')
             
-            # Create index with auto-detected dimensions
+            # Create L2 index with auto-detected dimensions
             if self._dimensions is None:
                 self._dimensions = embeddings_array.shape[1]
                 self._store_metadata('embedding_dimensions', str(self._dimensions))
@@ -401,27 +619,65 @@ class VectorStore:
             self._faiss_index.add(embeddings_array)
             
             # Update faiss_idx in SQLite
-            for faiss_idx, (row_id, doc_id, _) in enumerate(rows):
+            for faiss_idx, (row_id, doc_id, _, _, _) in enumerate(rows):
                 conn.execute('UPDATE documents SET faiss_idx = ? WHERE id = ?', 
                            (faiss_idx, row_id))
             
+            # Build L0 index
+            valid_l0_embeddings = [emb for emb in l0_embeddings if emb is not None]
+            if valid_l0_embeddings:
+                l0_array = np.array(valid_l0_embeddings).astype('float32')
+                self._faiss_l0_index = faiss.IndexFlatIP(self._dimensions)
+                self._faiss_l0_index.add(l0_array)
+            else:
+                self._faiss_l0_index = faiss.IndexFlatIP(self._dimensions)
+            
+            # Build L1 index  
+            valid_l1_embeddings = [emb for emb in l1_embeddings if emb is not None]
+            if valid_l1_embeddings:
+                l1_array = np.array(valid_l1_embeddings).astype('float32')
+                self._faiss_l1_index = faiss.IndexFlatIP(self._dimensions)
+                self._faiss_l1_index.add(l1_array)
+            else:
+                self._faiss_l1_index = faiss.IndexFlatIP(self._dimensions)
+            
             conn.commit()
         
-        # Save to disk
+        # Save all indices to disk
         if self._faiss_index and self._faiss_index.ntotal > 0:
             faiss.write_index(self._faiss_index, str(self.faiss_path))
         
+        if self._faiss_l0_index and self._faiss_l0_index.ntotal > 0:
+            faiss.write_index(self._faiss_l0_index, str(self.faiss_l0_path))
+        
+        if self._faiss_l1_index and self._faiss_l1_index.ntotal > 0:
+            faiss.write_index(self._faiss_l1_index, str(self.faiss_l1_path))
+        
         self._index_dirty = False
-        logger.info(f"FAISS index rebuilt with {len(embeddings)} vectors")
+        logger.info(f"FAISS indices rebuilt: {len(embeddings)} L2, {len(valid_l0_embeddings)} L0, {len(valid_l1_embeddings)} L1")
 
     def stats(self) -> Dict[str, Any]:
         """Get storage statistics."""
         doc_count = self.count()
         faiss_count = self._faiss_index.ntotal if self._faiss_index else 0
+        l0_index_count = self._faiss_l0_index.ntotal if self._faiss_l0_index else 0
+        l1_index_count = self._faiss_l1_index.ntotal if self._faiss_l1_index else 0
+        
+        # Count documents with L0/L1 abstracts
+        with sqlite3.connect(self.sqlite_path) as conn:
+            l0_count_result = conn.execute('SELECT COUNT(*) FROM documents WHERE l0_abstract IS NOT NULL').fetchone()
+            l1_count_result = conn.execute('SELECT COUNT(*) FROM documents WHERE l1_overview IS NOT NULL').fetchone()
+            l0_count = l0_count_result[0] if l0_count_result else 0
+            l1_count = l1_count_result[0] if l1_count_result else 0
         
         return {
             'document_count': doc_count,
             'faiss_vectors': faiss_count,
+            'l0_count': l0_count,
+            'l1_count': l1_count,
+            'l0_index_vectors': l0_index_count,
+            'l1_index_vectors': l1_index_count,
+            'progressive_ready': l0_index_count > 0 and l1_index_count > 0,
             'consistent': doc_count == faiss_count,
             'db_path': str(self.db_path),
             'dimensions': self._dimensions,
@@ -460,7 +716,11 @@ class VectorStore:
                     metadata TEXT DEFAULT '{}',
                     embedding BLOB NOT NULL,
                     faiss_idx INTEGER,
-                    created TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                    created TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    l0_abstract TEXT DEFAULT NULL,
+                    l1_overview TEXT DEFAULT NULL,
+                    l0_embedding BLOB DEFAULT NULL,
+                    l1_embedding BLOB DEFAULT NULL
                 )
             ''')
             
@@ -486,14 +746,64 @@ class VectorStore:
             conn.execute('CREATE INDEX IF NOT EXISTS idx_documents_doc_id ON documents(doc_id)')
             conn.execute('CREATE INDEX IF NOT EXISTS idx_documents_faiss_idx ON documents(faiss_idx)')
             
-            # Set schema version
+            # Check and migrate schema if needed
+            self._migrate_schema(conn)
+
+    def _migrate_schema(self, conn) -> None:
+        """Handle schema migrations."""
+        # Get current schema version
+        result = conn.execute('''
+            SELECT value FROM metadata WHERE key = 'schema_version'
+        ''').fetchone()
+        
+        current_version = int(result[0]) if result else 1
+        
+        if current_version == CURRENT_SCHEMA_VERSION:
+            return
+        
+        # Migrate from version 1 to 2
+        if current_version == 1 and CURRENT_SCHEMA_VERSION == 2:
+            logger.info("Migrating schema from version 1 to 2...")
+            
+            # Add new columns for L0/L1 abstracts
+            try:
+                conn.execute('ALTER TABLE documents ADD COLUMN l0_abstract TEXT DEFAULT NULL')
+            except sqlite3.OperationalError:
+                pass  # Column might already exist
+            
+            try:
+                conn.execute('ALTER TABLE documents ADD COLUMN l1_overview TEXT DEFAULT NULL')
+            except sqlite3.OperationalError:
+                pass
+                
+            try:
+                conn.execute('ALTER TABLE documents ADD COLUMN l0_embedding BLOB DEFAULT NULL')
+            except sqlite3.OperationalError:
+                pass
+                
+            try:
+                conn.execute('ALTER TABLE documents ADD COLUMN l1_embedding BLOB DEFAULT NULL')
+            except sqlite3.OperationalError:
+                pass
+            
+            # Update schema version
             conn.execute('''
-                INSERT OR IGNORE INTO metadata (key, value) 
+                INSERT OR REPLACE INTO metadata (key, value) 
+                VALUES ('schema_version', ?)
+            ''', (str(CURRENT_SCHEMA_VERSION),))
+            
+            logger.info("Schema migration complete.")
+        
+        # Set schema version if new DB
+        if current_version < CURRENT_SCHEMA_VERSION:
+            conn.execute('''
+                INSERT OR REPLACE INTO metadata (key, value) 
                 VALUES ('schema_version', ?)
             ''', (str(CURRENT_SCHEMA_VERSION),))
 
     def _load_faiss_index(self) -> None:
-        """Load FAISS index from disk."""
+        """Load FAISS indices from disk."""
+        # Load main index
         if self.faiss_path.exists():
             try:
                 self._faiss_index = faiss.read_index(str(self.faiss_path))
@@ -508,6 +818,24 @@ class VectorStore:
                 logger.warning(f"Failed to load FAISS index: {e}. Will rebuild.")
                 self._faiss_index = None
                 self._index_dirty = True
+        
+        # Load L0 index
+        if self.faiss_l0_path.exists():
+            try:
+                self._faiss_l0_index = faiss.read_index(str(self.faiss_l0_path))
+                logger.info(f"FAISS L0 index loaded: {self._faiss_l0_index.ntotal} vectors")
+            except Exception as e:
+                logger.warning(f"Failed to load FAISS L0 index: {e}")
+                self._faiss_l0_index = None
+        
+        # Load L1 index
+        if self.faiss_l1_path.exists():
+            try:
+                self._faiss_l1_index = faiss.read_index(str(self.faiss_l1_path))
+                logger.info(f"FAISS L1 index loaded: {self._faiss_l1_index.ntotal} vectors")
+            except Exception as e:
+                logger.warning(f"Failed to load FAISS L1 index: {e}")
+                self._faiss_l1_index = None
 
     def _validate_startup(self) -> None:
         """Validate consistency on startup."""
