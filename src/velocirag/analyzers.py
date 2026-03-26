@@ -349,6 +349,132 @@ class EntityAnalyzer:
         return word in common_words
 
 
+class GLiNERAnalyzer:
+    """Extract typed entities using GLiNER encoder model. Zero hallucination — can only tag spans present in text."""
+    
+    DEFAULT_LABELS = ['person', 'technology', 'organization', 'concept', 'project', 'course']
+    
+    def __init__(self, labels: list = None, model_name: str = 'urchade/gliner_small-v2.1',
+                 threshold: float = 0.35, min_frequency: int = 2):
+        self.labels = labels or self.DEFAULT_LABELS
+        self.threshold = threshold
+        self.min_frequency = min_frequency
+        self.model_name = model_name
+        self._model = None  # Lazy load
+    
+    def _load_model(self):
+        """Lazy-load GLiNER model."""
+        if self._model is None:
+            try:
+                from gliner import GLiNER
+                self._model = GLiNER.from_pretrained(self.model_name)
+                logger.info(f"GLiNER model loaded: {self.model_name}")
+            except ImportError:
+                raise ImportError(
+                    "GLiNER not installed. Install with: pip install velocirag[ner]"
+                )
+        return self._model
+    
+    def analyze(self, nodes: List[Node]) -> Tuple[List[Node], List[Edge]]:
+        """Extract entities using GLiNER and create graph nodes + edges."""
+        model = self._load_model()
+        
+        new_nodes = []
+        new_edges = []
+        
+        # Extract entities from all notes
+        all_entities: Dict[str, List[Dict]] = {}  # node_id -> list of {text, label, score}
+        entity_counts = Counter()
+        
+        for node in nodes:
+            if node.type != NodeType.NOTE or not node.content:
+                continue
+            
+            # GLiNER has a max sequence length — chunk text if needed
+            text = node.content[:4096]  # Reasonable limit
+            
+            try:
+                entities = model.predict_entities(text, self.labels, threshold=self.threshold)
+                node_entities = []
+                for e in entities:
+                    entity_text = e['text'].strip()
+                    if len(entity_text) < 2:
+                        continue
+                    node_entities.append({
+                        'text': entity_text,
+                        'label': e['label'],
+                        'score': e['score']
+                    })
+                    entity_counts[entity_text.lower()] += 1
+                
+                all_entities[node.id] = node_entities
+            except Exception as ex:
+                logger.warning(f"GLiNER extraction failed for {node.id}: {ex}")
+                continue
+        
+        # Filter by frequency, keep best label/score per entity
+        entity_info: Dict[str, Dict] = {}  # lowercase -> {text, label, score, count}
+        for node_id, entities in all_entities.items():
+            for e in entities:
+                key = e['text'].lower()
+                if entity_counts[key] < self.min_frequency:
+                    continue
+                if key not in entity_info or e['score'] > entity_info[key]['score']:
+                    entity_info[key] = {
+                        'text': e['text'],
+                        'label': e['label'],
+                        'score': e['score'],
+                        'count': entity_counts[key]
+                    }
+        
+        # Create entity nodes
+        entity_node_map = {}  # lowercase entity text -> node id
+        for key, info in entity_info.items():
+            entity_id = f"entity_{hashlib.md5(key.encode()).hexdigest()[:8]}"
+            entity_node = Node(
+                id=entity_id,
+                type=NodeType.ENTITY,
+                title=info['text'],
+                metadata={
+                    'entity_type': info['label'],
+                    'gliner_score': round(info['score'], 3),
+                    'frequency': info['count'],
+                    'extractor': 'gliner'
+                }
+            )
+            new_nodes.append(entity_node)
+            entity_node_map[key] = entity_id
+        
+        # Create mention edges (note → entity)
+        for node in nodes:
+            if node.id not in all_entities:
+                continue
+            
+            seen = set()  # avoid duplicate edges per note
+            for e in all_entities[node.id]:
+                key = e['text'].lower()
+                if key in entity_node_map and key not in seen:
+                    seen.add(key)
+                    edge_id = f"mentions_{node.id}_{entity_node_map[key]}"
+                    edge = Edge(
+                        id=edge_id,
+                        source_id=node.id,
+                        target_id=entity_node_map[key],
+                        type=RelationType.MENTIONS,
+                        weight=min(e['score'], 0.9),  # Score-weighted edges
+                        confidence=e['score'],
+                        metadata={
+                            'entity_name': e['text'],
+                            'entity_type': e['label'],
+                            'extractor': 'gliner'
+                        }
+                    )
+                    new_edges.append(edge)
+        
+        logger.info(f"GLiNERAnalyzer: {len(new_nodes)} entities, {len(new_edges)} mention edges")
+        return new_nodes, new_edges
+
+
 class TopicAnalyzer:
     """Cluster documents by shared topics using TF-IDF."""
     
