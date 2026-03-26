@@ -36,6 +36,7 @@ class RelationType(Enum):
     DISCUSSES = "discusses"
     MENTIONS = "mentions"
     PART_OF = "part_of"
+    TEMPORAL = "temporal"
 
 
 class GraphStoreError(Exception):

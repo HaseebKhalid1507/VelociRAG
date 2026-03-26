@@ -163,7 +163,7 @@ class TemporalAnalyzer:
                         id=edge_id,
                         source_id=current['node'].id,
                         target_id=other['node'].id,
-                        type=RelationType.SIMILAR_TO,  # Using similarity for temporal closeness
+                        type=RelationType.TEMPORAL,  # Temporal proximity, NOT semantic similarity
                         weight=weight,
                         confidence=0.7,
                         metadata={
@@ -482,9 +482,10 @@ class TopicAnalyzer:
 class SemanticAnalyzer:
     """Create similarity edges using embedding cosine similarity."""
     
-    def __init__(self, embedder: Embedder, threshold: float = 0.6):
+    def __init__(self, embedder: Embedder, threshold: float = 0.7, max_edges_per_node: int = 20):
         self.embedder = embedder
         self.threshold = threshold
+        self.max_edges_per_node = max_edges_per_node
     
     def analyze(self, nodes: List[Node]) -> Tuple[List[Node], List[Edge]]:
         """Find semantic similarity relationships."""
@@ -514,8 +515,12 @@ class SemanticAnalyzer:
             logger.warning("Not enough embeddings for similarity analysis")
             return new_nodes, new_edges
         
-        # Calculate pairwise similarities
+        # Calculate pairwise similarities with per-node edge limits
         node_ids = list(embeddings.keys())
+        node_edge_counts = defaultdict(int)
+        similarity_pairs = []
+        
+        # First pass: calculate all similarities and sort by strength
         for i, source_id in enumerate(node_ids):
             for j, target_id in enumerate(node_ids):
                 if i >= j:  # Skip self and duplicates
@@ -524,20 +529,36 @@ class SemanticAnalyzer:
                 similarity = self._cosine_similarity(embeddings[source_id], embeddings[target_id])
                 
                 if similarity >= self.threshold:
-                    edge_id = f"semantic_{source_id}_{target_id}"
-                    edge = Edge(
-                        id=edge_id,
-                        source_id=source_id,
-                        target_id=target_id,
-                        type=RelationType.SIMILAR_TO,
-                        weight=similarity,
-                        confidence=similarity,
-                        metadata={
-                            'similarity_score': float(similarity),
-                            'analysis_method': 'cosine_similarity'
-                        }
-                    )
-                    new_edges.append(edge)
+                    similarity_pairs.append((similarity, source_id, target_id))
+        
+        # Sort by similarity (strongest first) to prioritize best connections
+        similarity_pairs.sort(reverse=True)
+        
+        # Second pass: create edges respecting per-node limits
+        for similarity, source_id, target_id in similarity_pairs:
+            # Check if either node has reached its edge limit
+            if (node_edge_counts[source_id] >= self.max_edges_per_node or 
+                node_edge_counts[target_id] >= self.max_edges_per_node):
+                continue
+            
+            edge_id = f"semantic_{source_id}_{target_id}"
+            edge = Edge(
+                id=edge_id,
+                source_id=source_id,
+                target_id=target_id,
+                type=RelationType.SIMILAR_TO,
+                weight=similarity,
+                confidence=similarity,
+                metadata={
+                    'similarity_score': float(similarity),
+                    'analysis_method': 'cosine_similarity'
+                }
+            )
+            new_edges.append(edge)
+            
+            # Update edge counts for both nodes
+            node_edge_counts[source_id] += 1
+            node_edge_counts[target_id] += 1
         
         logger.info(f"SemanticAnalyzer: {len(new_edges)} similarity edges")
         return new_nodes, new_edges

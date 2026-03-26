@@ -56,7 +56,7 @@ class GraphPipeline:
         self.temporal_analyzer = TemporalAnalyzer(window_days=7)
         self.entity_analyzer = EntityAnalyzer(min_frequency=2)
         self.topic_analyzer = TopicAnalyzer(n_topics=10)
-        self.semantic_analyzer = SemanticAnalyzer(embedder, threshold=0.6) if embedder else None
+        self.semantic_analyzer = SemanticAnalyzer(embedder, threshold=0.7) if embedder else None
         self.centrality_analyzer = CentralityAnalyzer()
         
         # Pipeline state

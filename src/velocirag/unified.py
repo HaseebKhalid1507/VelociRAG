@@ -1,8 +1,11 @@
 """
-Velociragtor Phase 7 Unified Search - Orchestration layer for vector + graph search.
+Velociragtor Phase 7 Unified Search - True 3-Layer Fusion.
 
-Clean orchestration that combines vector search results with optional graph enrichment.
-Designed for graceful degradation when graph components are unavailable.
+Revolutionary search orchestration that fuses vector similarity, metadata filtering, 
+and graph discovery into a single ranked result set. Each layer contributes candidates
+independently, then RRF fusion determines the final ranking.
+
+No layer dominates. All layers contribute. True fusion.
 """
 
 import logging
@@ -27,10 +30,11 @@ class UnifiedSearchError(Exception):
 
 class UnifiedSearch:
     """
-    Unified search orchestrator combining vector search with graph enrichment.
+    Unified search orchestrator with true 3-layer fusion.
     
-    The conductor of the Velociragtor symphony — brings together vector precision
-    with graph context for richer, more meaningful search results.
+    The apex predator of search. Combines vector precision, metadata structure,
+    and graph connections through battle-tested RRF fusion. Each layer hunts
+    independently, then they converge on the truth.
     """
     
     def __init__(self, searcher: Searcher, graph_store: Optional[GraphStore] = None,
@@ -59,237 +63,530 @@ class UnifiedSearch:
     def search(self, query: str, limit: int = 5, threshold: float = 0.3, 
                enrich_graph: bool = True, filters: Optional[Dict] = None) -> Dict[str, Any]:
         """
-        Unified search: vector search + metadata filtering + graph enrichment.
+        True 3-layer fusion search: vector + metadata + graph → RRF → final results.
         
-        Pipeline:
-        1. If filters provided, query MetadataStore for matching filenames
-        2. Run vector search (searcher.search)
-        3. If filters, apply RRF fusion to boost filtered results
-        4. For each result, find graph connections (if graph_store provided)
-        5. Add graph metadata to results (connected nodes, related notes)
-        6. Log search hits via tracker (if provided)
-        7. Return enriched results
+        Revolutionary pipeline:
+        1. Layer 1 — Vector: embed query → FAISS → top candidates by cosine similarity
+        2. Layer 2 — Metadata: query SQL → docs matching filters or title text search  
+        3. Layer 3 — Graph: find query in graph → traverse edges → discover connected docs
+        4. RRF Fusion: merge all 3 candidate lists using reciprocal rank fusion
+        5. Load full content for top fused results + graph enrichment
         
         Args:
             query: Search query string
             limit: Maximum results to return
-            threshold: Minimum similarity threshold
-            enrich_graph: Enable graph enrichment (requires graph_store)
+            threshold: Minimum similarity threshold (for vector layer)
+            enrich_graph: Enable graph enrichment of final results
             filters: Optional metadata filters (tags, status, category, etc.)
             
         Returns:
-            Dictionary with enriched search results and metadata
+            Dictionary with fused search results and layer statistics
         """
         start_time = time.time()
         
-        # Step 1: Query metadata store if filters provided
-        metadata_results = []
-        metadata_filenames = set()
-        metadata_time_ms = 0
+        if not query or not query.strip():
+            return {
+                'results': [],
+                'query': query,
+                'total_results': 0,
+                'search_mode': 'empty_query',
+                'search_time_ms': 0.0,
+                'layer_stats': {}
+            }
         
-        if self.metadata_store and filters:
-            try:
-                metadata_start = time.time()
-                metadata_docs = self.metadata_store.query(**filters, limit=limit * 3)
-                metadata_time_ms = (time.time() - metadata_start) * 1000
-                
-                # Extract filenames for filtering/boosting
-                for doc in metadata_docs:
-                    metadata_filenames.add(doc.get('filename', ''))
-                    metadata_results.append({
-                        'filename': doc.get('filename', ''),
-                        'title': doc.get('title', ''),
-                        'score': 1.0  # Metadata matches get full score
-                    })
-                    
-                logger.info(f"Metadata query found {len(metadata_docs)} matching documents")
-            except Exception as e:
-                logger.warning(f"Metadata query failed: {e}")
-                # Continue without metadata filtering
+        query = query.strip()
+        layer_stats = {}
         
-        # Step 2: Execute vector search
+        # === LAYER 1: VECTOR SEARCH ===
+        # Always runs — this is the foundation
+        vector_start = time.time()
         try:
-            vector_start = time.time()
             vector_result = self.searcher.search(
                 query=query,
-                limit=limit * 2 if filters else limit * 2,  # Get more for fusion/enrichment
+                limit=limit * 3,  # Get more candidates for fusion
                 threshold=threshold,
-                include_stats=True
+                include_stats=False
             )
-            vector_time = (time.time() - vector_start) * 1000
-            
+            vector_results = vector_result.get('results', [])
+            layer_stats['vector'] = {
+                'candidates': len(vector_results),
+                'time_ms': round((time.time() - vector_start) * 1000, 2)
+            }
         except Exception as e:
             raise UnifiedSearchError(f"Vector search failed: {e}")
         
-        vector_results = vector_result.get('results', [])
-        
-        # Step 3: Apply RRF fusion if metadata filtering was used
-        fusion_time_ms = 0
-        if metadata_results and filters:
+        # === LAYER 2: METADATA SEARCH ===
+        # Runs if metadata_store exists
+        metadata_results = []
+        if self.metadata_store:
+            metadata_start = time.time()
             try:
-                fusion_start = time.time()
+                if filters:
+                    # Filtered query — use provided filters
+                    metadata_docs = self.metadata_store.query(**filters, limit=limit * 3)
+                else:
+                    # Unfiltered query — text search against titles
+                    metadata_docs = self._search_metadata_titles(query, limit=limit * 3)
                 
-                # Convert vector results to RRF format
-                vector_rrf_results = []
-                for i, result in enumerate(vector_results):
-                    # Try to extract filename from metadata
-                    file_path = result.get('metadata', {}).get('file_path', '')
-                    filename = Path(file_path).name if file_path else result.get('doc_id', '')
-                    
-                    vector_rrf_results.append({
-                        'doc_id': result.get('doc_id', f'vec_{i}'),
-                        'score': result.get('similarity', result.get('score', 0)),
-                        'metadata': result.get('metadata', {}),
-                        'content': result.get('content', ''),
-                        '_source': 'vector',
-                        '_filename': filename
-                    })
-                
-                # Convert metadata results to RRF format
-                metadata_rrf_results = []
-                for i, result in enumerate(metadata_results):
-                    metadata_rrf_results.append({
-                        'doc_id': result.get('filename', f'meta_{i}'),
-                        'score': result.get('score', 1.0),
-                        'metadata': {'filename': result.get('filename')},
-                        'content': '',
-                        '_source': 'metadata',
-                        '_filename': result.get('filename', '')
-                    })
-                
-                # Apply RRF fusion
-                fused_results_list = reciprocal_rank_fusion(
-                    [vector_rrf_results, metadata_rrf_results],
-                    k=60
-                )
-                
-                # Map fused results back to original vector results
-                fused_results = []
-                seen_docs = set()
-                
-                for fused_result in fused_results_list[:limit * 2]:
-                    # Extract document identification
-                    fused_filename = fused_result.get('_filename', '')
-                    fused_doc_id = fused_result.get('doc_id', '')
-                    rrf_score = fused_result.get('metadata', {}).get('rrf_score', 0.0)
-                    
-                    # Find the original vector result
-                    for result in vector_results:
-                        result_doc_id = result.get('doc_id', '')
-                        result_filename = Path(result.get('metadata', {}).get('file_path', '')).name
-                        
-                        match_key = result_filename or result_doc_id
-                        if (match_key == fused_filename or match_key == fused_doc_id) and match_key not in seen_docs:
-                            # Boost score if in metadata results
-                            if result_filename in metadata_filenames:
-                                result['_metadata_match'] = True
-                            result['_rrf_score'] = rrf_score
-                            fused_results.append(result)
-                            seen_docs.add(match_key)
-                            break
-                
-                vector_results = fused_results
-                fusion_time_ms = (time.time() - fusion_start) * 1000
-                
+                metadata_results = metadata_docs
+                layer_stats['metadata'] = {
+                    'candidates': len(metadata_results),
+                    'time_ms': round((time.time() - metadata_start) * 1000, 2),
+                    'search_type': 'filtered' if filters else 'title_search'
+                }
             except Exception as e:
-                logger.warning(f"RRF fusion failed: {e}")
-                # Continue with original vector results
+                logger.warning(f"Metadata search failed: {e}")
+                layer_stats['metadata'] = {
+                    'candidates': 0,
+                    'time_ms': 0,
+                    'error': str(e)
+                }
         
-        # Determine search mode
-        graph_available = bool(self.graph_store and enrich_graph)
-        metadata_available = bool(self.metadata_store and filters)
+        # === LAYER 3: GRAPH SEARCH ===
+        # Runs if graph_querier exists and enrich_graph=True
+        graph_results = []
+        if self.graph_querier and enrich_graph:
+            graph_start = time.time()
+            try:
+                # Try multiple graph search strategies
+                graph_candidates = []
+                
+                # Strategy 1: Find connections by full query
+                try:
+                    connections = self.graph_querier.find_connections(query, depth=2)
+                    if 'connections_by_type' in connections:
+                        for rel_type, conns in connections['connections_by_type'].items():
+                            for conn in conns[:3]:  # Limit per relation type
+                                graph_candidates.append({
+                                    'title': conn['node'],
+                                    'score': conn.get('weight', 0.5),
+                                    'source': f'connection_{rel_type}'
+                                })
+                except Exception:
+                    pass
+                
+                # Strategy 2: Try individual words from query
+                query_words = query.lower().split()
+                for word in query_words:
+                    if len(word) > 2:  # Skip very short words
+                        try:
+                            connections = self.graph_querier.find_connections(word, depth=1)
+                            if 'connections_by_type' in connections:
+                                for rel_type, conns in connections['connections_by_type'].items():
+                                    for conn in conns[:2]:  # Limit per word
+                                        graph_candidates.append({
+                                            'title': conn['node'],
+                                            'score': conn.get('weight', 0.3),
+                                            'source': f'word_{word}_{rel_type}'
+                                        })
+                        except Exception:
+                            pass
+                
+                # Strategy 3: Topic web if query looks topical
+                if len(query.split()) <= 3:  # Short queries might be topics
+                    try:
+                        topic_web = self.graph_querier.get_topic_web(query)
+                        if 'related_nodes' in topic_web:
+                            for node in topic_web['related_nodes'][:5]:
+                                graph_candidates.append({
+                                    'title': node['title'],
+                                    'score': node.get('connection_strength', 0.3),
+                                    'source': 'topic_web'
+                                })
+                    except Exception:
+                        pass
+                
+                # Remove duplicates
+                seen_titles = set()
+                graph_results = []
+                for candidate in graph_candidates:
+                    title = candidate['title']
+                    if title not in seen_titles:
+                        seen_titles.add(title)
+                        graph_results.append(candidate)
+                
+                layer_stats['graph'] = {
+                    'candidates': len(graph_results),
+                    'time_ms': round((time.time() - graph_start) * 1000, 2),
+                    'strategies_used': ['connections', 'topic_web']
+                }
+            except Exception as e:
+                logger.warning(f"Graph search failed: {e}")
+                layer_stats['graph'] = {
+                    'candidates': 0,
+                    'time_ms': 0,
+                    'error': str(e)
+                }
         
-        if metadata_available and graph_available:
-            search_mode = 'unified_full'  # All three layers
-        elif metadata_available:
-            search_mode = 'vector_metadata'  # Vector + metadata
-        elif graph_available:
-            search_mode = 'vector_graph'  # Vector + graph
-        else:
-            search_mode = 'vector_only'  # Vector only
+        # === STEP 4: NORMALIZE ALL RESULTS FOR RRF FUSION ===
+        fusion_start = time.time()
         
-        # Initialize enrichment stats
-        enrichment_stats = {
-            'vector_results': len(vector_results),
-            'graph_enriched': 0,
-            'graph_available': graph_available,
-            'metadata_available': metadata_available,
-            'metadata_matches': len(metadata_filenames) if filters else 0
-        }
+        # Normalize vector results: extract filename and create ranked list
+        vector_ranked = []
+        for i, result in enumerate(vector_results):
+            filename = self._extract_filename(result)
+            if filename:
+                vector_ranked.append({
+                    'doc_id': filename,
+                    'score': result.get('similarity', result.get('score', 0)),
+                    'content': result.get('content', result.get('chunk', '')),
+                    'metadata': result.get('metadata', {}),
+                    '_source': 'vector',
+                    '_rank': i + 1
+                })
         
-        # Step 2: Enrich results with graph connections
-        enriched_results = []
-        graph_errors = []
+        # Normalize metadata results: extract filename and create ranked list
+        metadata_ranked = []
+        for i, result in enumerate(metadata_results):
+            filename = result.get('filename', '')
+            if filename:
+                metadata_ranked.append({
+                    'doc_id': filename,
+                    'score': 1.0,  # Metadata matches get uniform high score
+                    'content': result.get('title', ''),
+                    'metadata': {'source_doc': result},
+                    '_source': 'metadata',
+                    '_rank': i + 1
+                })
         
-        for result in vector_results[:limit]:  # Only enrich up to final limit
-            # Deep copy to avoid modifying original results
-            enriched_result = result.copy()
-            enriched_result['metadata'] = result['metadata'].copy()
+        # Normalize graph results: title to filename mapping
+        graph_ranked = []
+        for i, result in enumerate(graph_results):
+            # Convert graph node title to filename format
+            title = result['title']
+            filename = self._title_to_filename(title)
+            if filename:
+                # Cap graph scores at 0.5 — graph candidates should SUPPORT vector results, not override them
+                graph_score = min(result.get('score', 0.3), 0.5)
+                graph_ranked.append({
+                    'doc_id': filename,
+                    'score': graph_score,
+                    'content': title,
+                    'metadata': {'graph_source': result['source']},
+                    '_source': 'graph',
+                    '_rank': i + 1
+                })
+        
+        # === STEP 5: RRF FUSION ACROSS ALL 3 LAYERS ===
+        available_lists = []
+        if vector_ranked:
+            available_lists.append(vector_ranked)
+        if metadata_ranked:
+            available_lists.append(metadata_ranked)
+        if graph_ranked:
+            available_lists.append(graph_ranked)
+        
+        try:
+            # Use custom doc_id function for filename-based deduplication
+            def filename_doc_id(result):
+                return result.get('doc_id', '')
             
-            # Initialize graph metadata fields
+            fused_results = reciprocal_rank_fusion(
+                available_lists,
+                k=60,
+                doc_id_fn=filename_doc_id
+            )
+        except Exception as e:
+            logger.error(f"RRF fusion failed: {e}")
+            # Fallback to vector results only
+            fused_results = vector_ranked
+        
+        fusion_time_ms = round((time.time() - fusion_start) * 1000, 2)
+        
+        # === VECTOR CONFIRMATION FILTER ===
+        # Filter: graph-only candidates must have minimum vector similarity to survive
+        # This prevents random graph connections from polluting results
+        confirmed_results = []
+        vector_filenames = {self._extract_filename(r) for r in vector_results if self._extract_filename(r)}
+        
+        # Only apply filtering if we have valid vector results to compare against
+        if vector_filenames or not graph_ranked:
+            for fused_result in fused_results:
+                filename = fused_result.get('doc_id', '')
+                source = fused_result.get('_source', '')
+                
+                if filename in vector_filenames:
+                    # Found by vector search — always keep
+                    confirmed_results.append(fused_result)
+                elif source == 'metadata':
+                    # Found by metadata — keep (structured match is trustworthy)
+                    confirmed_results.append(fused_result)
+                elif source == 'vector' or not vector_filenames:
+                    # Vector result or no valid vector filenames to compare — always keep
+                    confirmed_results.append(fused_result)
+                else:
+                    # Graph-only candidate — verify it has some vector relevance
+                    # Search the vector results for any similarity to this doc
+                    has_vector_support = False
+                    for vr in vector_results:
+                        if self._extract_filename(vr) == filename:
+                            has_vector_support = True
+                            break
+                    
+                    if has_vector_support:
+                        confirmed_results.append(fused_result)
+                    else:
+                        # Check: does this doc appear ANYWHERE in a wider vector search?
+                        # Skip it — graph-only with no vector confirmation is noise
+                        logger.debug(f"Filtered graph-only candidate: {filename}")
+        else:
+            # No filtering if we have no vector filenames to validate against
+            confirmed_results = fused_results
+        
+        fused_results = confirmed_results
+        
+        # === STEP 6: LOAD FULL CONTENT FOR TOP FUSED RESULTS ===
+        final_results = []
+        for fused_result in fused_results[:limit]:
+            # Determine which original result to use for full content
+            filename = fused_result.get('doc_id', '')
+            rrf_score = fused_result.get('metadata', {}).get('rrf_score', 0)
+            source_layers = fused_result.get('_source', 'unknown')
+            
+            # Find the best original result (prefer vector for full content)
+            best_original = None
+            for result in vector_results:
+                if self._extract_filename(result) == filename:
+                    best_original = result
+                    break
+            
+            # If not found in vector results, create from fused result
+            if not best_original:
+                best_original = {
+                    'content': fused_result.get('content', ''),
+                    'score': fused_result.get('score', 0),
+                    'similarity': fused_result.get('score', 0),
+                    'metadata': {
+                        'file_path': filename,
+                        'fusion_only': True
+                    }
+                }
+            
+            # Create enriched result (preserve original field structure)
+            enriched_result = best_original.copy()
+            
+            # Ensure consistent score/similarity fields
+            if 'similarity' not in enriched_result and 'score' in enriched_result:
+                enriched_result['similarity'] = enriched_result['score']
+            elif 'score' not in enriched_result and 'similarity' in enriched_result:
+                enriched_result['score'] = enriched_result['similarity']
+            
+            # Ensure metadata dict exists
+            if 'metadata' not in enriched_result:
+                enriched_result['metadata'] = {}
+            else:
+                enriched_result['metadata'] = enriched_result['metadata'].copy()
+            
+            # Add fusion metadata
+            enriched_result['metadata']['rrf_score'] = rrf_score
+            enriched_result['metadata']['source_layers'] = source_layers
+            
+            # Check if this result was found in metadata layer (for backward compatibility)
+            if metadata_results:
+                for meta_result in metadata_results:
+                    if meta_result.get('filename', '') == filename:
+                        enriched_result['_metadata_match'] = True
+                        break
+            
+            # Initialize graph metadata
             enriched_result['metadata']['graph_connections'] = []
             enriched_result['metadata']['related_notes'] = []
             enriched_result['metadata']['found_in_graph'] = False
             
-            # Enrich with graph data if available
-            if graph_available:
+            final_results.append(enriched_result)
+        
+        # === STEP 7: GRAPH ENRICHMENT OF FINAL RESULTS ===
+        enrichment_errors = []
+        graph_enriched_count = 0
+        
+        if self.graph_querier and enrich_graph:
+            for result in final_results:
                 try:
                     graph_info = self._enrich_with_graph(result)
                     if graph_info['success']:
-                        enriched_result['metadata']['graph_connections'] = graph_info['connections']
-                        enriched_result['metadata']['related_notes'] = graph_info['related_notes']
-                        enriched_result['metadata']['found_in_graph'] = graph_info['found_in_graph']
-                        enrichment_stats['graph_enriched'] += 1
+                        result['metadata']['graph_connections'] = graph_info['connections']
+                        result['metadata']['related_notes'] = graph_info['related_notes']
+                        result['metadata']['found_in_graph'] = graph_info['found_in_graph']
+                        graph_enriched_count += 1
                     elif graph_info.get('error'):
-                        graph_errors.append(graph_info['error'])
-                        
+                        enrichment_errors.append(graph_info['error'])
                 except Exception as e:
-                    graph_errors.append(f"Graph enrichment error: {e}")
-                    logger.warning(f"Graph enrichment failed for result: {e}")
-            
-            enriched_results.append(enriched_result)
+                    enrichment_errors.append(f"Enrichment error: {e}")
         
-        # Log search hits via tracker if available
+        # === STEP 8: USAGE TRACKING ===
         if self.tracker:
             try:
-                for result in enriched_results:
-                    file_path = result.get('metadata', {}).get('file_path')
-                    if file_path:
-                        filename = Path(file_path).name
+                for result in final_results:
+                    filename = self._extract_filename(result)
+                    if filename:
                         self.tracker.log_search_hit(filename, query)
             except Exception as e:
-                logger.warning(f"Failed to log search hits: {e}")
+                logger.warning(f"Usage tracking failed: {e}")
         
-        # Calculate timing
-        total_time = time.time() - start_time
+        # === STEP 9: DETERMINE SEARCH MODE ===
+        # Based on what layers were attempted, not what returned results
+        layers_attempted = ['vector']  # Vector always runs
         
-        # Build response
+        if self.metadata_store:
+            layers_attempted.append('metadata')
+        
+        if self.graph_querier and enrich_graph:
+            layers_attempted.append('graph')
+        
+        if len(layers_attempted) == 3:
+            search_mode = 'unified_full'
+        elif len(layers_attempted) == 2:
+            if 'metadata' in layers_attempted and 'graph' in layers_attempted:
+                search_mode = 'vector_metadata_graph'  # This case shouldn't happen
+            elif 'metadata' in layers_attempted:
+                search_mode = 'vector_metadata'
+            elif 'graph' in layers_attempted:
+                search_mode = 'vector_graph'
+            else:
+                search_mode = 'vector_only'
+        else:
+            search_mode = 'vector_only'
+        
+        # === FINAL RESPONSE ===
+        total_time_ms = round((time.time() - start_time) * 1000, 2)
+        
         response = {
-            'results': enriched_results,
+            'results': final_results,
             'query': query,
-            'total_results': len(enriched_results),
-            'search_time_ms': round(total_time * 1000, 2),
+            'total_results': len(final_results),
+            'search_time_ms': total_time_ms,
             'search_mode': search_mode,
-            'enrichment_stats': enrichment_stats
+            'layer_stats': layer_stats,
+            'fusion_stats': {
+                'fusion_time_ms': fusion_time_ms,
+                'layers_fused': len(available_lists),
+                'total_candidates': sum(len(lst) for lst in available_lists),
+                'graph_enriched': graph_enriched_count
+            },
+            # Backward compatibility - keep enrichment_stats for tests
+            'enrichment_stats': {
+                'vector_results': len(vector_results),
+                'graph_enriched': graph_enriched_count,
+                'graph_available': bool(self.graph_store and enrich_graph),
+                'metadata_available': bool(self.metadata_store),
+                'metadata_matches': len(metadata_results) if self.metadata_store else 0
+            }
         }
         
-        # Add timing metadata
+        # Add layer-specific timing for backward compatibility
         if 'search_time_ms' in vector_result:
             response['vector_time_ms'] = vector_result['search_time_ms']
-        if 'variants_used' in vector_result:
-            response['variants_used'] = vector_result['variants_used']
-        if metadata_time_ms > 0:
-            response['metadata_time_ms'] = round(metadata_time_ms, 2)
-        if fusion_time_ms > 0:
-            response['fusion_time_ms'] = round(fusion_time_ms, 2)
-        
-        # Log any graph errors (but don't fail the search)
-        if graph_errors:
-            unique_errors = list(set(graph_errors))
-            logger.warning(f"Graph enrichment errors: {unique_errors}")
-            response['graph_errors'] = unique_errors[:3]  # Limit error spam
+        if metadata_results and 'metadata' in layer_stats:
+            response['metadata_time_ms'] = layer_stats['metadata']['time_ms']
+        if len(available_lists) > 1:
+            response['fusion_time_ms'] = fusion_time_ms
+            
+        if enrichment_errors:
+            response['graph_errors'] = enrichment_errors[:3]
         
         return response
+    
+    def _search_metadata_titles(self, query: str, limit: int) -> List[Dict]:
+        """
+        Search metadata store by matching query against document titles.
+        
+        Args:
+            query: Search query
+            limit: Max results
+            
+        Returns:
+            List of matching documents
+        """
+        if not self.metadata_store:
+            return []
+        
+        try:
+            import sqlite3
+            with sqlite3.connect(self.metadata_store.db_path) as conn:
+                # Simple title search using LIKE
+                query_pattern = f"%{query}%"
+                cursor = conn.execute('''
+                    SELECT * FROM documents 
+                    WHERE title LIKE ? OR filename LIKE ?
+                    ORDER BY 
+                        CASE WHEN title LIKE ? THEN 0 ELSE 1 END,
+                        updated_at DESC
+                    LIMIT ?
+                ''', (query_pattern, query_pattern, query_pattern, limit))
+                
+                rows = cursor.fetchall()
+                columns = [desc[0] for desc in cursor.description]
+                
+                results = []
+                for row in rows:
+                    doc_dict = dict(zip(columns, row))
+                    # Parse JSON meta field if present
+                    if doc_dict.get('meta'):
+                        try:
+                            import json
+                            doc_dict['meta'] = json.loads(doc_dict['meta'])
+                        except json.JSONDecodeError:
+                            doc_dict['meta'] = {}
+                    results.append(doc_dict)
+                
+                return results
+        except Exception as e:
+            logger.warning(f"Metadata title search failed: {e}")
+            return []
+    
+    def _extract_filename(self, result: Dict) -> str:
+        """
+        Extract filename from search result for deduplication.
+        
+        Args:
+            result: Search result dictionary
+            
+        Returns:
+            Filename string or empty if not found
+        """
+        metadata = result.get('metadata', {})
+        file_path = metadata.get('file_path', '')
+        
+        if file_path:
+            # Handle various file path formats
+            if '::' in file_path:
+                # Chunk format: "prefix::file_path::suffix"
+                parts = file_path.split('::')
+                if len(parts) >= 2:
+                    file_path = parts[1] if len(parts) > 2 else parts[0]
+            
+            # Extract just the filename
+            return Path(file_path).name
+        
+        # Fallback to doc_id or other identifiers
+        return result.get('doc_id', '')
+    
+    def _title_to_filename(self, title: str) -> str:
+        """
+        Convert graph node title to likely filename format.
+        
+        Args:
+            title: Node title from graph
+            
+        Returns:
+            Probable filename
+        """
+        if not title:
+            return ''
+        
+        # Clean title for filename matching
+        # Common patterns: "python-guide" -> "python-guide.md"
+        cleaned = title.lower().strip()
+        
+        # If it already looks like a filename, return as-is
+        if '.' in cleaned and cleaned.count('.') == 1:
+            return cleaned
+        
+        # Common extensions to try
+        common_extensions = ['.md', '.txt', '.rst', '.py', '.js', '.html']
+        
+        # Return with .md as most common for notes
+        return f"{cleaned}.md"
     
     def _enrich_with_graph(self, result: Dict[str, Any]) -> Dict[str, Any]:
         """
@@ -374,7 +671,7 @@ class UnifiedSearch:
         metadata = result.get('metadata', {})
         file_path = metadata.get('file_path', '')
         
-        if not file_path:
+        if not file_path or not file_path.strip():
             return None
         
         try:
@@ -384,48 +681,10 @@ class UnifiedSearch:
             # Get filename without extension
             title = path.stem
             
-            # Clean common prefixes/suffixes if needed
-            # (Add project-specific cleaning logic here)
-            
-            return title if title else None
+            return title if title and title.strip() else None
             
         except Exception:
             return None
-    
-    def stats(self) -> Dict[str, Any]:
-        """
-        Get comprehensive unified search statistics.
-        
-        Returns:
-            Dictionary with searcher stats and graph store info
-        """
-        stats = {
-            'searcher_available': bool(self.searcher),
-            'graph_available': bool(self.graph_store),
-            'components': {
-                'searcher': 'available' if self.searcher else 'missing',
-                'graph_store': 'available' if self.graph_store else 'missing',
-                'graph_querier': 'available' if self.graph_querier else 'missing'
-            }
-        }
-        
-        # Add searcher stats if available
-        if self.searcher and hasattr(self.searcher, 'store'):
-            try:
-                store_stats = self.searcher.store.stats()
-                stats['vector_stats'] = store_stats
-            except Exception as e:
-                stats['vector_stats'] = {'error': str(e)}
-        
-        # Add graph stats if available
-        if self.graph_store:
-            try:
-                graph_stats = self.graph_store.stats()
-                stats['graph_stats'] = graph_stats
-            except Exception as e:
-                stats['graph_stats'] = {'error': str(e)}
-        
-        return stats
     
     def query(self, **filters) -> List[Dict]:
         """
@@ -488,3 +747,48 @@ class UnifiedSearch:
         except Exception as e:
             logger.error(f"Metadata query failed: {e}")
             return []
+    
+    def stats(self) -> Dict[str, Any]:
+        """
+        Get comprehensive unified search statistics.
+        
+        Returns:
+            Dictionary with searcher stats and graph store info
+        """
+        stats = {
+            'searcher_available': bool(self.searcher),
+            'graph_available': bool(self.graph_store),
+            'metadata_available': bool(self.metadata_store),
+            'components': {
+                'searcher': 'available' if self.searcher else 'missing',
+                'graph_store': 'available' if self.graph_store else 'missing',
+                'graph_querier': 'available' if self.graph_querier else 'missing',
+                'metadata_store': 'available' if self.metadata_store else 'missing'
+            }
+        }
+        
+        # Add searcher stats if available
+        if self.searcher and hasattr(self.searcher, 'store'):
+            try:
+                store_stats = self.searcher.store.stats()
+                stats['vector_stats'] = store_stats
+            except Exception as e:
+                stats['vector_stats'] = {'error': str(e)}
+        
+        # Add graph stats if available
+        if self.graph_store:
+            try:
+                graph_stats = self.graph_store.stats()
+                stats['graph_stats'] = graph_stats
+            except Exception as e:
+                stats['graph_stats'] = {'error': str(e)}
+        
+        # Add metadata stats if available
+        if self.metadata_store:
+            try:
+                metadata_stats = self.metadata_store.stats()
+                stats['metadata_stats'] = metadata_stats
+            except Exception as e:
+                stats['metadata_stats'] = {'error': str(e)}
+        
+        return stats

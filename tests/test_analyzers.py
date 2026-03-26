@@ -257,7 +257,7 @@ class TestTemporalAnalyzer:
         edge_1_2 = next((e for e in new_edges if 
                          {e.source_id, e.target_id} == {"note_1", "note_2"}), None)
         assert edge_1_2 is not None
-        assert edge_1_2.type == RelationType.SIMILAR_TO
+        assert edge_1_2.type == RelationType.TEMPORAL
         assert edge_1_2.metadata['temporal_type'] == 'concurrent'
         assert edge_1_2.metadata['days_apart'] == 3
     

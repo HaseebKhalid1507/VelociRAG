@@ -16,3 +16,4 @@ venv/
 .venv/
 *.tmp
 embedding_cache.json
+data/mikoshi/*.bak
