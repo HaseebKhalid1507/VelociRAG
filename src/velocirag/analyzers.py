@@ -496,6 +496,182 @@ class GLiNERAnalyzer:
         return new_nodes, new_edges
 
 
+class RelationAnalyzer:
+    """Extract semantic relations between entities using GLiNER multitask model.
+    
+    Two-pass approach (from JR's architecture):
+    1. GLiNERAnalyzer already extracted entity positions
+    2. This analyzer finds relation SPANS using relation-type labels
+    3. Matches spans to nearby entities to create typed edges
+    
+    O(r) complexity — scans for relation spans once, not entity pairs.
+    """
+    
+    RELATION_LABELS = ['uses', 'built by', 'enables', 'evolved from', 'part of', 'requires', 'influences']
+    
+    # Map GLiNER labels → RelationType enum values
+    LABEL_TO_TYPE = {
+        'uses': RelationType.USES,
+        'built by': RelationType.CREATED_BY,
+        'enables': RelationType.ENABLES,
+        'evolved from': RelationType.EVOLVED_FROM,
+        'part of': RelationType.PART_OF,
+        'requires': RelationType.REQUIRES,
+        'influences': RelationType.INFLUENCES,
+    }
+    
+    def __init__(self, relation_labels: list = None, 
+                 model_name: str = 'knowledgator/gliner-multitask-large-v0.5',
+                 threshold: float = 0.4):
+        self.relation_labels = relation_labels or self.RELATION_LABELS
+        self.model_name = model_name
+        self.threshold = threshold
+        self._model = None
+    
+    def _load_model(self):
+        """Lazy-load GLiNER multitask model."""
+        if self._model is None:
+            try:
+                from gliner import GLiNER
+                self._model = GLiNER.from_pretrained(self.model_name)
+                logger.info(f"GLiNER multitask model loaded: {self.model_name}")
+            except ImportError:
+                raise ImportError("GLiNER not installed. pip install velocirag[ner]")
+        return self._model
+    
+    def analyze(self, nodes: List[Node], entity_edges: List[Edge]) -> List[Edge]:
+        """Extract relations between entities.
+        
+        Args:
+            nodes: Note nodes (need their content)
+            entity_edges: MENTIONS edges from GLiNERAnalyzer (maps notes → entities)
+        
+        Returns:
+            New edges representing entity-to-entity relations
+        """
+        model = self._load_model()
+        new_edges = []
+        
+        # Build lookup: note_id → list of (entity_id, entity_name, position)
+        # We need entity positions, but we don't have them from edges alone.
+        # So we re-extract entities from text to get positions.
+        note_entities = {}  # note_id → [(entity_name, entity_id)]
+        for edge in entity_edges:
+            if edge.type == RelationType.MENTIONS:
+                note_id = edge.source_id
+                entity_id = edge.target_id
+                entity_name = edge.metadata.get('entity_name', '')
+                if note_id not in note_entities:
+                    note_entities[note_id] = []
+                note_entities[note_id].append((entity_name, entity_id))
+        
+        for node in nodes:
+            if node.type != NodeType.NOTE or not node.content:
+                continue
+            if node.id not in note_entities:
+                continue
+            
+            entities_in_note = note_entities[node.id]
+            if len(entities_in_note) < 2:
+                continue  # Need at least 2 entities for a relation
+            
+            # Chunk text for GLiNER (max ~1500 chars)
+            chunks = GLiNERAnalyzer._chunk_for_gliner(node.content)
+            
+            for chunk in chunks:
+                # Find entity positions in this chunk
+                entity_positions = []
+                for ent_name, ent_id in entities_in_note:
+                    # Find all occurrences of this entity in the chunk
+                    start = 0
+                    while True:
+                        idx = chunk.lower().find(ent_name.lower(), start)
+                        if idx == -1:
+                            break
+                        entity_positions.append({
+                            'name': ent_name,
+                            'id': ent_id,
+                            'start': idx,
+                            'end': idx + len(ent_name)
+                        })
+                        start = idx + 1
+                
+                if len(entity_positions) < 2:
+                    continue
+                
+                # Run relation extraction
+                try:
+                    rel_spans = model.predict_entities(chunk, self.relation_labels, threshold=self.threshold)
+                except Exception as e:
+                    logger.warning(f"Relation extraction failed for {node.id}: {e}")
+                    continue
+                
+                # Match relation spans to entity pairs
+                for rel in rel_spans:
+                    rel_type = self.LABEL_TO_TYPE.get(rel['label'])
+                    if not rel_type:
+                        continue
+                    
+                    # Find which entity overlaps with this relation span
+                    obj_entity = None
+                    for ep in entity_positions:
+                        # Check overlap
+                        if (ep['start'] <= rel['start'] < ep['end'] or 
+                            rel['start'] <= ep['start'] < rel['end']):
+                            obj_entity = ep
+                            break
+                        # Exact text match
+                        if ep['name'].lower() == rel['text'].lower():
+                            obj_entity = ep
+                            break
+                    
+                    if not obj_entity:
+                        continue
+                    
+                    # Find nearest different entity (subject)
+                    best_subj = None
+                    best_dist = float('inf')
+                    for ep in entity_positions:
+                        if ep['id'] == obj_entity['id']:
+                            continue
+                        dist = abs(ep['start'] - rel['start'])
+                        if dist < best_dist and dist < 200:  # Max 200 chars apart
+                            best_dist = dist
+                            best_subj = ep
+                    
+                    if not best_subj:
+                        continue
+                    
+                    # Create relation edge
+                    edge_id = f"rel_{best_subj['id']}_{rel_type.value}_{obj_entity['id']}"
+                    edge = Edge(
+                        id=edge_id,
+                        source_id=best_subj['id'],
+                        target_id=obj_entity['id'],
+                        type=rel_type,
+                        weight=min(rel['score'], 0.9),
+                        confidence=rel['score'],
+                        metadata={
+                            'relation_label': rel['label'],
+                            'source_text': rel['text'],
+                            'source_note': node.id,
+                            'extractor': 'gliner_multitask'
+                        }
+                    )
+                    new_edges.append(edge)
+        
+        # Deduplicate edges (same source→target→type, keep highest confidence)
+        edge_map = {}
+        for edge in new_edges:
+            key = (edge.source_id, edge.target_id, edge.type)
+            if key not in edge_map or edge.confidence > edge_map[key].confidence:
+                edge_map[key] = edge
+        
+        new_edges = list(edge_map.values())
+        logger.info(f"RelationAnalyzer: {len(new_edges)} relation edges")
+        return new_edges
+
+
 class TopicAnalyzer:
     """Cluster documents by shared topics using TF-IDF."""
     

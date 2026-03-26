@@ -37,6 +37,12 @@ class RelationType(Enum):
     MENTIONS = "mentions"
     PART_OF = "part_of"
     TEMPORAL = "temporal"
+    USES = "uses"
+    ENABLES = "enables"
+    CREATED_BY = "created_by"
+    INFLUENCES = "influences"
+    REQUIRES = "requires"
+    EVOLVED_FROM = "evolved_from"
 
 
 class GraphStoreError(Exception):

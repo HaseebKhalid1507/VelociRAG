@@ -15,11 +15,12 @@ from .analyzers import (
     TopicAnalyzer, SemanticAnalyzer, CentralityAnalyzer
 )
 
-# Optional GLiNER analyzer
+# Optional GLiNER analyzers
 try:
-    from .analyzers import GLiNERAnalyzer
+    from .analyzers import GLiNERAnalyzer, RelationAnalyzer
 except ImportError:
     GLiNERAnalyzer = None
+    RelationAnalyzer = None
 from .pipeline import GraphPipeline
 from .unified import UnifiedSearch
 from .abstracts import AbstractGenerator, AbstractResult

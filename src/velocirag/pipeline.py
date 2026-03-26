@@ -68,6 +68,15 @@ class GraphPipeline:
         else:
             self.entity_analyzer = EntityAnalyzer(min_frequency=2)
         
+        # Relation extraction — uses GLiNER multitask (optional, only with gliner entity extractor)
+        self.relation_analyzer = None
+        if entity_extractor == 'gliner':
+            try:
+                from .analyzers import RelationAnalyzer
+                self.relation_analyzer = RelationAnalyzer()
+            except ImportError:
+                pass
+        
         self.topic_analyzer = TopicAnalyzer(n_topics=10)
         self.semantic_analyzer = SemanticAnalyzer(embedder, threshold=0.7) if embedder else None
         self.centrality_analyzer = CentralityAnalyzer()
@@ -119,6 +128,21 @@ class GraphPipeline:
             
             # Stage 4: Entity extraction
             self._stage_4_entity_analysis()
+            
+            # Free entity model before loading relation model (memory safety on 8GB)
+            if hasattr(self.entity_analyzer, '_model') and self.entity_analyzer._model is not None:
+                del self.entity_analyzer._model
+                self.entity_analyzer._model = None
+                import gc; gc.collect()
+            
+            # Stage 4.5: Relation extraction (if available)
+            if self.relation_analyzer:
+                self._stage_4_5_relation_analysis()
+                # Free relation model too
+                if hasattr(self.relation_analyzer, '_model') and self.relation_analyzer._model is not None:
+                    del self.relation_analyzer._model
+                    self.relation_analyzer._model = None
+                    import gc; gc.collect()
             
             # Stage 5: Temporal analysis
             self._stage_5_temporal_analysis()
@@ -356,6 +380,24 @@ class GraphPipeline:
         }
         
         logger.info(f"Stage 4 complete: +{len(new_nodes)} entities, +{len(new_edges)} edges in {duration:.1f}s")
+    
+    def _stage_4_5_relation_analysis(self) -> None:
+        """Stage 4.5: Extract semantic relations between entities."""
+        logger.info("Stage 4.5: Extracting semantic relations...")
+        start_time = datetime.now()
+        
+        # Get mention edges from stage 4 (connects notes to entities)
+        mention_edges = [e for e in self.edges if e.type == RelationType.MENTIONS]
+        
+        new_edges = self.relation_analyzer.analyze(self.nodes, mention_edges)
+        self.edges.extend(new_edges)
+        
+        duration = (datetime.now() - start_time).total_seconds()
+        self.stats['stages']['relations'] = {
+            'relation_edges': len(new_edges),
+            'duration_seconds': duration
+        }
+        logger.info(f"Stage 4.5 complete: +{len(new_edges)} relation edges in {duration:.1f}s")
     
     def _stage_5_temporal_analysis(self) -> None:
         """Stage 5: Analyze temporal relationships."""
