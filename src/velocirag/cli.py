@@ -124,8 +124,10 @@ def cli(ctx, verbose: bool):
               help='Build knowledge graph during indexing')
 @click.option('--metadata', '-m', is_flag=True,
               help='Extract metadata from frontmatter and content')
+@click.option('--gliner', is_flag=True,
+              help='Use GLiNER encoder model for entity extraction (requires pip install velocirag[ner])')
 @click.pass_context
-def index(ctx, path: str, db: Optional[str], source: str, force: bool, graph: bool, metadata: bool):
+def index(ctx, path: str, db: Optional[str], source: str, force: bool, graph: bool, metadata: bool, gliner: bool):
     """
     Index a directory of markdown files.
     
@@ -219,10 +221,12 @@ def index(ctx, path: str, db: Optional[str], source: str, force: bool, graph: bo
                     metadata_db = db_path / "metadata.db"
                     metadata_store_obj = MetadataStore(str(metadata_db))
                 
+                entity_ext = 'gliner' if gliner else 'regex'
                 pipeline = GraphPipeline(
                     graph_store=graph_store,
                     embedder=embedder,
-                    metadata_store=metadata_store_obj
+                    metadata_store=metadata_store_obj,
+                    entity_extractor=entity_ext
                 )
                 
                 graph_stats = pipeline.build(str(path), force_rebuild=force)
