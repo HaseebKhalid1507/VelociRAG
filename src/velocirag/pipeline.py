@@ -1,5 +1,5 @@
 """
-Graph build pipeline for Velociragtor.
+Graph build pipeline for Velocirag.
 
 10-stage pipeline: scan → metadata → explicit → entity → temporal → topic → semantic → processing → centrality → store
 Clean orchestration with proper error handling and progress reporting.

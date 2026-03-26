@@ -1,5 +1,5 @@
 """
-Velociragtor Phase 4 Searcher - High-level search orchestration.
+Velocirag Phase 4 Searcher - High-level search orchestration.
 
 The apex predator of search orchestration, now with production-grade logic:
 - Advanced query variant generation (CS656 → CS 656 patterns)
@@ -120,7 +120,7 @@ class Searcher:
     High-level search orchestration combining query variants, embeddings,
     vector search, and reciprocal rank fusion.
     
-    The apex predator of the Velociragtor ecosystem, now with production logic.
+    The apex predator of the Velocirag ecosystem, now with production logic.
     """
     
     def __init__(

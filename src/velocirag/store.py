@@ -1,5 +1,5 @@
 """
-Velociragtor Phase 3 Store - Production vector storage with FAISS and SQLite.
+Velocirag Phase 3 Store - Production vector storage with FAISS and SQLite.
 
 Fixed version addressing performance issues:
 - Batch-aware FAISS rebuilds 

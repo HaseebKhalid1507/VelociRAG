@@ -1,6 +1,6 @@
 """Velocirag — Progressive multi-layer RAG engine for markdown knowledge bases."""
 
-__version__ = "0.3.0"
+__version__ = "0.3.2"
 
 from .chunker import chunk_markdown
 from .variants import generate_variants

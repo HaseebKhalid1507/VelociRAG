@@ -1,5 +1,5 @@
 """
-Cross-encoder reranking for Velociragtor.
+Cross-encoder reranking for Velocirag.
 
 Uses sentence-transformers CrossEncoder for optimized relevance scoring
 of query-document pairs. Provides smart document excerpting and graceful

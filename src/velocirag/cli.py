@@ -1,7 +1,7 @@
 """
-Velociragtor Phase 8 CLI - Command line dominance.
+Velocirag Phase 8 CLI - Command line dominance.
 
-Click-based command line interface providing complete access to Velociragtor's
+Click-based command line interface providing complete access to Velocirag's
 indexing and search capabilities. Designed for both interactive exploration
 and automated pipeline integration.
 """
@@ -69,7 +69,7 @@ def resolve_db_path(db_param: Optional[str]) -> Path:
     Intelligent database path resolution with clear precedence:
     
     1. Explicit --db parameter (highest priority)
-    2. VELOCIRAGTOR_DB environment variable  
+    2. VELOCIRAG_DB environment variable  
     3. ./.velocirag/ in current working directory (default)
     
     Creates directory structure if needed.
@@ -77,7 +77,7 @@ def resolve_db_path(db_param: Optional[str]) -> Path:
     if db_param:
         path = Path(db_param).expanduser().absolute()
     else:
-        env_path = os.environ.get('VELOCIRAGTOR_DB')
+        env_path = os.environ.get('VELOCIRAG_DB')
         if env_path:
             path = Path(env_path).expanduser().absolute()
         else:
@@ -104,7 +104,7 @@ def format_file_size(size_bytes: int) -> str:
 @click.pass_context
 def cli(ctx, verbose: bool):
     """
-    Velociragtor — Production vector search for markdown documents.
+    Velocirag — Production vector search for markdown documents.
     
     Built for speed, precision, and relentless knowledge extraction.
     """
@@ -602,7 +602,7 @@ def status(ctx, db: Optional[str], output_format: str):
             click.echo(json.dumps(output, indent=2))
         else:
             # Human-readable text format
-            click.echo(info("Velociragtor Index Status"))
+            click.echo(info("Velocirag Index Status"))
             click.echo()
             
             # Basic info

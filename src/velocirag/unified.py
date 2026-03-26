@@ -1,5 +1,5 @@
 """
-Velociragtor Phase 7 Unified Search - True 3-Layer Fusion.
+Velocirag Phase 7 Unified Search - True 3-Layer Fusion.
 
 Revolutionary search orchestration that fuses vector similarity, metadata filtering, 
 and graph discovery into a single ranked result set. Each layer contributes candidates

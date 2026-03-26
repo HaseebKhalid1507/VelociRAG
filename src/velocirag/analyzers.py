@@ -1,5 +1,5 @@
 """
-Knowledge graph analyzers for Velociragtor.
+Knowledge graph analyzers for Velocirag.
 
 All 6 analyzers in one clean file. Extract relationships from markdown content
 using explicit links, entity extraction, temporal analysis, topic clustering,

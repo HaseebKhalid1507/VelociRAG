@@ -1,5 +1,5 @@
 """
-Velociragtor Phase 6 Graph Foundation - Graph models and storage.
+Velocirag Phase 6 Graph Foundation - Graph models and storage.
 
 Production-grade graph data models and SQLite storage for knowledge
 representation. Designed for high-throughput node/edge operations with

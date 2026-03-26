@@ -17,3 +17,5 @@ venv/
 *.tmp
 embedding_cache.json
 data/mikoshi/*.bak
+:memory:/
+knowledge_graph.db

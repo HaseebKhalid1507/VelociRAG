@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "velocirag"
-version = "0.1.0"
+version = "0.3.2"
 description = "Progressive multi-layer RAG engine for markdown knowledge bases"
 readme = "README.md"
 license = {file = "LICENSE"}
@@ -48,9 +48,9 @@ dev = [
 velocirag = "velocirag.cli:cli"
 
 [project.urls]
-Homepage = "https://github.com/haseebk/velocirag"
-Repository = "https://github.com/haseebk/velocirag"
-Issues = "https://github.com/haseebk/velocirag/issues"
+Homepage = "https://github.com/HaseebKhalid1507/VelociRAG"
+Repository = "https://github.com/HaseebKhalid1507/VelociRAG"
+Issues = "https://github.com/HaseebKhalid1507/VelociRAG/issues"
 
 [tool.setuptools.packages.find]
 where = ["src"]
