@@ -138,8 +138,7 @@ class VectorStore:
                 if embedding is None:
                     if self.embedder is None:
                         raise ValueError(f"No embedder provided and no embedding for doc {doc_id}")
-                    embed_text = self._strip_metadata_for_embedding(content)
-                    embedding = self.embedder.embed(embed_text)
+                    embedding = self.embedder.embed(content)
                     if embedding.ndim == 1:
                         pass  # Single text
                     else:
@@ -1001,30 +1000,39 @@ class VectorStore:
         return embedding / norm if norm > 0 else embedding
 
     def _strip_metadata_for_embedding(self, content: str) -> str:
-        """Strip structural metadata from content before embedding.
+        """Strip parent context headers from content before embedding.
         
-        Removes header lines (# ...) from the start of chunks so embeddings
-        capture semantic content, not document structure. The full content
-        with headers is still stored — only the embedding input is cleaned.
+        The chunker prepends parent headers for context:
+          # Document Title        ← parent context (strip)
+          ## Parent Section       ← parent context (strip)
+          ### Actual Section      ← section's own header (KEEP)
+          Content text here...    ← content (KEEP)
+        
+        We strip parent context but keep the section's own header and all
+        content. This way embeddings capture the section topic + content
+        without structural noise from parent hierarchy.
         """
         if not content:
             return content
         
         lines = content.split('\n')
-        clean_lines = []
-        past_headers = False
         
-        for line in lines:
+        # Find the last header line in the leading header block
+        # Everything before it is parent context, everything from it onward is content
+        last_header_idx = -1
+        for i, line in enumerate(lines):
             stripped = line.strip()
-            # Skip leading header lines and blank lines before content
-            if not past_headers:
-                if stripped.startswith('#') or stripped == '':
-                    continue
-                past_headers = True
-            clean_lines.append(line)
+            if stripped.startswith('#'):
+                last_header_idx = i
+            elif stripped:  # Non-empty, non-header line = content started
+                break
         
-        result = '\n'.join(clean_lines).strip()
-        # If stripping removed everything (header-only chunk), return original
+        if last_header_idx <= 0:
+            # No parent context to strip (0 or 1 header)
+            return content
+        
+        # Keep from the last header onward (the section's own header + content)
+        result = '\n'.join(lines[last_header_idx:]).strip()
         return result if result else content
 
     def _store_metadata(self, key: str, value: str) -> None:
