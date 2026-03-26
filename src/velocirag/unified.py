@@ -502,7 +502,8 @@ class UnifiedSearch:
         
         try:
             import sqlite3
-            with sqlite3.connect(self.metadata_store.db_path) as conn:
+            conn = sqlite3.connect(self.metadata_store.db_path)
+            try:
                 # Simple title search using LIKE
                 query_pattern = f"%{query}%"
                 cursor = conn.execute('''
@@ -530,6 +531,8 @@ class UnifiedSearch:
                     results.append(doc_dict)
                 
                 return results
+            finally:
+                conn.close()
         except Exception as e:
             logger.warning(f"Metadata title search failed: {e}")
             return []
@@ -716,7 +719,8 @@ class UnifiedSearch:
                     try:
                         # Get tags for this document
                         import sqlite3
-                        with sqlite3.connect(self.metadata_store.db_path) as conn:
+                        conn = sqlite3.connect(self.metadata_store.db_path)
+                        try:
                             tag_rows = conn.execute('''
                                 SELECT t.name FROM tags t
                                 JOIN document_tags dt ON t.id = dt.tag_id
@@ -724,6 +728,8 @@ class UnifiedSearch:
                                 ORDER BY t.name
                             ''', (doc_id,)).fetchall()
                             doc_copy['tags'] = [row[0] for row in tag_rows]
+                        finally:
+                            conn.close()
                     except Exception as e:
                         logger.warning(f"Failed to get tags for doc {doc_id}: {e}")
                         doc_copy['tags'] = []

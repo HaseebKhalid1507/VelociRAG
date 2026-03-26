@@ -6,6 +6,7 @@ Provides analytics and insights into document usage and staleness.
 """
 
 import logging
+from contextlib import contextmanager
 from typing import Dict, List, Optional
 
 from .metadata import MetadataStore
@@ -30,6 +31,16 @@ class UsageTracker:
         """
         self.metadata_store = metadata_store
         logger.info("UsageTracker initialized")
+    
+    @contextmanager
+    def _connect(self):
+        """Get a SQLite connection that's properly closed after use."""
+        import sqlite3
+        conn = sqlite3.connect(self.metadata_store.db_path)
+        try:
+            yield conn
+        finally:
+            conn.close()
     
     def log_search_hit(self, filename: str, query: str) -> None:
         """
@@ -101,7 +112,7 @@ class UsageTracker:
         
         try:
             import sqlite3
-            with sqlite3.connect(self.metadata_store.db_path) as conn:
+            with self._connect() as conn:
                 rows = conn.execute('''
                     SELECT action, source, timestamp FROM usage_log
                     WHERE doc_id = ?
@@ -131,7 +142,7 @@ class UsageTracker:
         """
         try:
             import sqlite3
-            with sqlite3.connect(self.metadata_store.db_path) as conn:
+            with self._connect() as conn:
                 cursor = conn.execute('''
                     SELECT d.* FROM documents d
                     WHERE d.id NOT IN (
@@ -178,7 +189,7 @@ class UsageTracker:
         """
         try:
             import sqlite3
-            with sqlite3.connect(self.metadata_store.db_path) as conn:
+            with self._connect() as conn:
                 rows = conn.execute('''
                     SELECT 
                         d.filename,
@@ -230,7 +241,7 @@ class UsageTracker:
             
             cutoff_date = (datetime.now() - timedelta(days=days)).isoformat()
             
-            with sqlite3.connect(self.metadata_store.db_path) as conn:
+            with self._connect() as conn:
                 # Total events in period
                 total_events = conn.execute('''
                     SELECT COUNT(*) FROM usage_log WHERE timestamp >= ?

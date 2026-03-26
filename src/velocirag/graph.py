@@ -133,6 +133,15 @@ class GraphQuerier:
         """Initialize querier with graph store."""
         self.store = store
     
+    @contextmanager
+    def _connect(self):
+        """Get a SQLite connection that's properly closed after use."""
+        conn = sqlite3.connect(self.store.db_path)
+        try:
+            yield conn
+        finally:
+            conn.close()
+    
     def find_connections(self, node_title: str, depth: int = 2) -> Dict[str, Any]:
         """
         Find all connections to a node by title within specified depth.
@@ -147,7 +156,7 @@ class GraphQuerier:
         # First find the node by title
         target_node = None
         try:
-            with sqlite3.connect(self.store.db_path) as conn:
+            with self._connect() as conn:
                 row = conn.execute('''
                     SELECT id FROM nodes WHERE title LIKE ? LIMIT 1
                 ''', (f'%{node_title}%',)).fetchone()
@@ -196,7 +205,7 @@ class GraphQuerier:
         """
         try:
             similar_nodes = []
-            with sqlite3.connect(self.store.db_path) as conn:
+            with self._connect() as conn:
                 # Find edges of type SIMILAR_TO
                 rows = conn.execute('''
                     SELECT target_id, weight, confidence 
@@ -281,7 +290,7 @@ class GraphQuerier:
         """
         try:
             topic_nodes = []
-            with sqlite3.connect(self.store.db_path) as conn:
+            with self._connect() as conn:
                 # Find topic node
                 topic_row = conn.execute('''
                     SELECT id FROM nodes WHERE type = ? AND title LIKE ?
@@ -330,7 +339,7 @@ class GraphQuerier:
         """
         try:
             hub_nodes = []
-            with sqlite3.connect(self.store.db_path) as conn:
+            with self._connect() as conn:
                 # Count connections for each node
                 rows = conn.execute('''
                     SELECT n.id, n.title, n.type,
@@ -390,6 +399,15 @@ class GraphStore:
         """Context manager exit with cleanup."""
         # No explicit cleanup needed - connections are per-operation
         pass
+    
+    @contextmanager
+    def _connect(self):
+        """Get a SQLite connection that's properly closed after use."""
+        conn = sqlite3.connect(self.db_path)
+        try:
+            yield conn
+        finally:
+            conn.close()
     
     def add_node(self, node: Node) -> None:
         """
@@ -530,7 +548,7 @@ class GraphStore:
             Node instance or None if not found
         """
         try:
-            with sqlite3.connect(self.db_path) as conn:
+            with self._connect() as conn:
                 row = conn.execute('''
                     SELECT id, type, title, content, metadata, created_at
                     FROM nodes WHERE id = ?
@@ -570,7 +588,7 @@ class GraphStore:
         """
         try:
             nodes = []
-            with sqlite3.connect(self.db_path) as conn:
+            with self._connect() as conn:
                 rows = conn.execute('''
                     SELECT id, type, title, content, metadata, created_at
                     FROM nodes WHERE type = ? ORDER BY created_at DESC
@@ -611,7 +629,7 @@ class GraphStore:
         
         try:
             edges = []
-            with sqlite3.connect(self.db_path) as conn:
+            with self._connect() as conn:
                 if direction == 'out':
                     query = '''
                         SELECT id, source_id, target_id, type, weight, confidence, metadata, created_at
@@ -775,7 +793,7 @@ class GraphStore:
             Dictionary with counts, types, database metrics
         """
         try:
-            with sqlite3.connect(self.db_path) as conn:
+            with self._connect() as conn:
                 # Node counts
                 node_count = conn.execute('SELECT COUNT(*) FROM nodes').fetchone()[0]
                 
@@ -832,7 +850,7 @@ class GraphStore:
     def _init_database(self) -> None:
         """Initialize SQLite database and tables."""
         try:
-            with sqlite3.connect(self.db_path) as conn:
+            with self._connect() as conn:
                 # Enable foreign key constraints
                 conn.execute('PRAGMA foreign_keys = ON')
                 

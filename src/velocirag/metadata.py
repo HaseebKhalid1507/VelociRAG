@@ -316,7 +316,7 @@ class MetadataStore:
         limit = filters.get('limit', 50)
         
         try:
-            with sqlite3.connect(self.db_path) as conn:
+            with self._connect() as conn:
                 # Build query dynamically
                 conditions = []
                 params = []
@@ -414,7 +414,7 @@ class MetadataStore:
             Document dictionary with tags and usage stats, or None if not found
         """
         try:
-            with sqlite3.connect(self.db_path) as conn:
+            with self._connect() as conn:
                 # Get document
                 cursor = conn.execute('''
                     SELECT * FROM documents WHERE filename = ?
@@ -507,7 +507,7 @@ class MetadataStore:
         stale_threshold = (datetime.now() - timedelta(days=days)).isoformat()
         
         try:
-            with sqlite3.connect(self.db_path) as conn:
+            with self._connect() as conn:
                 cursor = conn.execute('''
                     SELECT d.* FROM documents d
                     WHERE d.id NOT IN (
@@ -557,7 +557,7 @@ class MetadataStore:
         recent_threshold = (datetime.now() - timedelta(days=days)).isoformat()
         
         try:
-            with sqlite3.connect(self.db_path) as conn:
+            with self._connect() as conn:
                 cursor = conn.execute('''
                     SELECT * FROM documents 
                     WHERE created_at >= ?
@@ -596,7 +596,7 @@ class MetadataStore:
             Dictionary with total docs, tags, categories, usage counts
         """
         try:
-            with sqlite3.connect(self.db_path) as conn:
+            with self._connect() as conn:
                 # Basic counts
                 total_docs = conn.execute('SELECT COUNT(*) FROM documents').fetchone()[0]
                 total_tags = conn.execute('SELECT COUNT(*) FROM tags').fetchone()[0]
@@ -670,6 +670,15 @@ class MetadataStore:
         """Clean shutdown."""
         # No persistent connections to close
         pass
+    
+    @contextmanager
+    def _connect(self):
+        """Get a SQLite connection that's properly closed after use."""
+        conn = sqlite3.connect(self.db_path)
+        try:
+            yield conn
+        finally:
+            conn.close()
     
     @contextmanager
     def _transaction(self):

@@ -345,7 +345,7 @@ class VectorStore:
         
         # Get documents from SQLite
         results = []
-        with sqlite3.connect(self.sqlite_path) as conn:
+        with self._connect() as conn:
             for similarity, faiss_idx in zip(similarities[0], indices[0]):
                 if faiss_idx < 0:  # FAISS returns -1 for invalid indices
                     continue
@@ -385,7 +385,7 @@ class VectorStore:
         
         # Get documents from SQLite - need to map L0 index positions to doc IDs
         results = []
-        with sqlite3.connect(self.sqlite_path) as conn:
+        with self._connect() as conn:
             # Get documents that have L0 abstracts, in order
             l0_docs = conn.execute('''
                 SELECT doc_id, l0_abstract FROM documents 
@@ -426,7 +426,7 @@ class VectorStore:
         
         # Get documents from SQLite - need to map L1 index positions to doc IDs
         results = []
-        with sqlite3.connect(self.sqlite_path) as conn:
+        with self._connect() as conn:
             # Get documents that have L1 overviews, in order
             l1_docs = conn.execute('''
                 SELECT doc_id, l1_overview FROM documents 
@@ -455,7 +455,7 @@ class VectorStore:
 
     def get(self, doc_id: str) -> Optional[Dict]:
         """Retrieve document by ID."""
-        with sqlite3.connect(self.sqlite_path) as conn:
+        with self._connect() as conn:
             row = conn.execute('''
                 SELECT doc_id, content, metadata, embedding, faiss_idx, created 
                 FROM documents WHERE doc_id = ?
@@ -510,7 +510,7 @@ class VectorStore:
         
         stats = {'processed': 0, 'skipped': 0, 'errors': 0}
         
-        with sqlite3.connect(self.sqlite_path) as conn:
+        with self._connect() as conn:
             # Get documents without abstracts
             rows = conn.execute('''
                 SELECT doc_id, content FROM documents 
@@ -559,13 +559,13 @@ class VectorStore:
 
     def count(self) -> int:
         """Return total number of documents."""
-        with sqlite3.connect(self.sqlite_path) as conn:
+        with self._connect() as conn:
             result = conn.execute('SELECT COUNT(*) FROM documents').fetchone()
             return result[0] if result else 0
 
     def rebuild_index(self) -> None:
         """Rebuild all FAISS indices from SQLite embeddings."""
-        with sqlite3.connect(self.sqlite_path) as conn:
+        with self._connect() as conn:
             # Get all embeddings in order
             rows = conn.execute('''
                 SELECT id, doc_id, embedding, l0_embedding, l1_embedding FROM documents ORDER BY id
@@ -664,7 +664,7 @@ class VectorStore:
         l1_index_count = self._faiss_l1_index.ntotal if self._faiss_l1_index else 0
         
         # Count documents with L0/L1 abstracts
-        with sqlite3.connect(self.sqlite_path) as conn:
+        with self._connect() as conn:
             l0_count_result = conn.execute('SELECT COUNT(*) FROM documents WHERE l0_abstract IS NOT NULL').fetchone()
             l1_count_result = conn.execute('SELECT COUNT(*) FROM documents WHERE l1_overview IS NOT NULL').fetchone()
             l0_count = l0_count_result[0] if l0_count_result else 0
@@ -703,10 +703,19 @@ class VectorStore:
             self._auto_rebuild = old_auto
             if self._index_dirty:
                 self.rebuild_index()
+    
+    @contextmanager
+    def _connect(self):
+        """Get a SQLite connection that's properly closed after use."""
+        conn = sqlite3.connect(self.sqlite_path)
+        try:
+            yield conn
+        finally:
+            conn.close()
 
     def _init_sqlite(self) -> None:
         """Initialize SQLite database and tables."""
-        with sqlite3.connect(self.sqlite_path) as conn:
+        with self._connect() as conn:
             # Documents table
             conn.execute('''
                 CREATE TABLE IF NOT EXISTS documents (
@@ -840,7 +849,7 @@ class VectorStore:
     def _validate_startup(self) -> None:
         """Validate consistency on startup."""
         # Load dimensions from metadata
-        with sqlite3.connect(self.sqlite_path) as conn:
+        with self._connect() as conn:
             result = conn.execute('''
                 SELECT value FROM metadata WHERE key = 'embedding_dimensions'
             ''').fetchone()
@@ -889,7 +898,7 @@ class VectorStore:
 
     def _store_metadata(self, key: str, value: str) -> None:
         """Store key-value in metadata table."""
-        with sqlite3.connect(self.sqlite_path) as conn:
+        with self._connect() as conn:
             conn.execute('''
                 INSERT OR REPLACE INTO metadata (key, value) VALUES (?, ?)
             ''', (key, value))
@@ -898,7 +907,7 @@ class VectorStore:
         """Check if file needs reindexing based on mtime."""
         cache_key = f"{source_name}::{rel_path}" if source_name else str(rel_path)
         
-        with sqlite3.connect(self.sqlite_path) as conn:
+        with self._connect() as conn:
             result = conn.execute('''
                 SELECT last_modified FROM file_cache WHERE cache_key = ?
             ''', (cache_key,)).fetchone()
@@ -909,7 +918,7 @@ class VectorStore:
         """Update file cache with new mtime."""
         cache_key = f"{source_name}::{rel_path}" if source_name else str(rel_path)
         
-        with sqlite3.connect(self.sqlite_path) as conn:
+        with self._connect() as conn:
             conn.execute('''
                 INSERT OR REPLACE INTO file_cache (cache_key, last_modified, source_name)
                 VALUES (?, ?, ?)
@@ -934,7 +943,7 @@ class VectorStore:
         deleted_count = 0
         prefix = f"{source_name}::" if source_name else ""
         
-        with sqlite3.connect(self.sqlite_path) as conn:
+        with self._connect() as conn:
             # Get all cached files for this source
             if source_name:
                 rows = conn.execute('''
