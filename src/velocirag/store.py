@@ -138,7 +138,8 @@ class VectorStore:
                 if embedding is None:
                     if self.embedder is None:
                         raise ValueError(f"No embedder provided and no embedding for doc {doc_id}")
-                    embedding = self.embedder.embed(content)
+                    embed_text = self._strip_metadata_for_embedding(content)
+                    embedding = self.embedder.embed(embed_text)
                     if embedding.ndim == 1:
                         pass  # Single text
                     else:
@@ -998,6 +999,33 @@ class VectorStore:
         """L2-normalize embedding for cosine similarity."""
         norm = np.linalg.norm(embedding)
         return embedding / norm if norm > 0 else embedding
+
+    def _strip_metadata_for_embedding(self, content: str) -> str:
+        """Strip structural metadata from content before embedding.
+        
+        Removes header lines (# ...) from the start of chunks so embeddings
+        capture semantic content, not document structure. The full content
+        with headers is still stored — only the embedding input is cleaned.
+        """
+        if not content:
+            return content
+        
+        lines = content.split('\n')
+        clean_lines = []
+        past_headers = False
+        
+        for line in lines:
+            stripped = line.strip()
+            # Skip leading header lines and blank lines before content
+            if not past_headers:
+                if stripped.startswith('#') or stripped == '':
+                    continue
+                past_headers = True
+            clean_lines.append(line)
+        
+        result = '\n'.join(clean_lines).strip()
+        # If stripping removed everything (header-only chunk), return original
+        return result if result else content
 
     def _store_metadata(self, key: str, value: str) -> None:
         """Store key-value in metadata table."""

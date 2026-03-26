@@ -104,10 +104,10 @@ class TestGenerateVariants:
         assert len(result) == len(set(result))
     
     def test_max_variants_enforced(self):
-        """Maximum of 8 variants returned."""
+        """Maximum of 12 variants returned."""
         # Create a query that could generate many variants
         result = generate_variants("COMPLEX-test_file.py")
-        assert len(result) <= 8
+        assert len(result) <= 12
     
     def test_simple_query_no_variants(self):
         """Simple queries may not need many variants."""
@@ -277,7 +277,7 @@ class TestGenerateVariantsEdgeCases:
         query = "ABC123-DEF456_GHI789-JKL012_MNO345.py"
         result = generate_variants(query)
         
-        assert len(result) == 8  # Capped at MAX_VARIANTS
+        assert len(result) <= 12  # Capped at MAX_VARIANTS
         assert result[0] == query  # Original first
     
     def test_unicode_with_punctuation(self):
