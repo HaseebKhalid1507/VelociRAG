@@ -665,6 +665,438 @@ def status(ctx, db: Optional[str], output_format: str):
 @cli.command()
 @click.option('--db', type=click.Path(), default=None,
               help='Database path (default: ./.velocirag/)')
+@click.option('--format', 'output_format', type=click.Choice(['text', 'json']),
+              default='text', help='Output format')
+@click.option('--daemon', type=str, default=None,
+              help='Daemon socket path to also check daemon health')
+@click.pass_context
+def health(ctx, db, output_format, daemon):
+    """Full stack health check — every component, sync status, live test."""
+    import sqlite3
+    import socket
+    import struct
+    
+    verbose = ctx.obj.get('verbose', False)
+    db_path = resolve_db_path(db)
+    
+    def _query_daemon(socket_path, request):
+        s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        s.settimeout(5.0)
+        s.connect(socket_path)
+        data = json.dumps(request).encode()
+        s.sendall(struct.pack('>I', len(data)) + data)
+        raw = s.recv(4)
+        msg_len = struct.unpack('>I', raw)[0]
+        buf = b""
+        while len(buf) < msg_len:
+            buf += s.recv(min(msg_len - len(buf), 65536))
+        s.close()
+        return json.loads(buf)
+
+    issues = []
+    health_stats = {}
+    healthy_count = 0
+    total_count = 0
+
+    # Check daemon socket path
+    daemon_socket = daemon or "/tmp/jawz-search.sock"
+    check_daemon = daemon is not None or os.path.exists(daemon_socket)
+
+    # 1. Vector Store
+    total_count += 1
+    try:
+        if (db_path / "store.db").exists():
+            store = VectorStore(str(db_path))
+            store_stats = store.stats()
+            doc_count = store_stats['document_count']
+            faiss_count = store_stats['faiss_vectors']
+            consistent = store_stats['consistent']
+            
+            if doc_count > 0 and consistent:
+                status = "✅"
+                healthy_count += 1
+            elif doc_count > 0:
+                status = "⚠️"
+                issues.append("Vector store inconsistent")
+            else:
+                status = "❌"
+                issues.append("No documents in vector store")
+                
+            health_stats['vector_store'] = {
+                "status": status,
+                "document_count": doc_count,
+                "faiss_vectors": faiss_count,
+                "consistent": consistent
+            }
+        else:
+            status = "❌"
+            issues.append("Vector store database missing")
+            health_stats['vector_store'] = {
+                "status": status,
+                "error": "store.db not found"
+            }
+    except Exception as e:
+        status = "❌"
+        issues.append(f"Vector store error: {str(e)}")
+        health_stats['vector_store'] = {
+            "status": status,
+            "error": str(e)
+        }
+
+    # 2. FTS5 Index
+    total_count += 1
+    try:
+        if (db_path / "store.db").exists():
+            conn = sqlite3.connect(str(db_path / "store.db"))
+            try:
+                fts_count = conn.execute("SELECT COUNT(*) FROM chunks_fts").fetchone()[0]
+                doc_count = health_stats.get('vector_store', {}).get('document_count', 0)
+                
+                if fts_count > 0 and fts_count == doc_count:
+                    status = "✅"
+                    healthy_count += 1
+                elif fts_count > 0:
+                    status = "⚠️"
+                    issues.append(f"FTS5 sync issue ({fts_count} vs {doc_count} docs)")
+                else:
+                    status = "❌"
+                    issues.append("No FTS5 entries")
+                    
+                health_stats['fts5_index'] = {
+                    "status": status,
+                    "entry_count": fts_count,
+                    "synced_with_docs": fts_count == doc_count
+                }
+                
+                # Test query
+                test_result = conn.execute("SELECT COUNT(*) FROM chunks_fts WHERE chunks_fts MATCH 'test'").fetchone()[0]
+                health_stats['fts5_index']['test_query_results'] = test_result
+            except Exception as e:
+                status = "❌"
+                issues.append(f"FTS5 error: {str(e)}")
+                health_stats['fts5_index'] = {
+                    "status": status,
+                    "error": str(e)
+                }
+            finally:
+                conn.close()
+        else:
+            status = "❌"
+            issues.append("FTS5 database missing")
+            health_stats['fts5_index'] = {
+                "status": status,
+                "error": "store.db not found"
+            }
+    except Exception as e:
+        status = "❌"
+        issues.append(f"FTS5 check failed: {str(e)}")
+        health_stats['fts5_index'] = {
+            "status": status,
+            "error": str(e)
+        }
+
+    # 3. Knowledge Graph
+    total_count += 1
+    try:
+        if (db_path / "graph.db").exists():
+            conn = sqlite3.connect(str(db_path / "graph.db"))
+            try:
+                node_count = conn.execute("SELECT COUNT(*) FROM nodes").fetchone()[0]
+                edge_count = conn.execute("SELECT COUNT(*) FROM edges").fetchone()[0]
+                gliner_count = conn.execute("SELECT COUNT(*) FROM nodes WHERE metadata LIKE '%gliner%'").fetchone()[0]
+                
+                # Get type breakdown
+                node_types = dict(conn.execute("SELECT type, COUNT(*) FROM nodes GROUP BY type").fetchall())
+                edge_types = dict(conn.execute("SELECT type, COUNT(*) FROM edges GROUP BY type").fetchall())
+                
+                if node_count > 0 and edge_count > 0:
+                    status = "✅"
+                    healthy_count += 1
+                elif node_count > 0:
+                    status = "⚠️"
+                    issues.append("Graph has nodes but no edges")
+                else:
+                    status = "❌"
+                    issues.append("Empty knowledge graph")
+                    
+                health_stats['knowledge_graph'] = {
+                    "status": status,
+                    "node_count": node_count,
+                    "edge_count": edge_count,
+                    "gliner_entities": gliner_count,
+                    "node_types": node_types,
+                    "edge_types": edge_types
+                }
+            except Exception as e:
+                status = "❌"
+                issues.append(f"Graph error: {str(e)}")
+                health_stats['knowledge_graph'] = {
+                    "status": status,
+                    "error": str(e)
+                }
+            finally:
+                conn.close()
+        else:
+            status = "⚠️"
+            health_stats['knowledge_graph'] = {
+                "status": status,
+                "note": "Graph database not present (optional)"
+            }
+    except Exception as e:
+        status = "❌"
+        issues.append(f"Graph check failed: {str(e)}")
+        health_stats['knowledge_graph'] = {
+            "status": status,
+            "error": str(e)
+        }
+
+    # 4. Metadata Store
+    total_count += 1
+    try:
+        if (db_path / "metadata.db").exists():
+            conn = sqlite3.connect(str(db_path / "metadata.db"))
+            try:
+                doc_count = conn.execute("SELECT COUNT(*) FROM documents").fetchone()[0]
+                tag_count = conn.execute("SELECT COUNT(*) FROM tags").fetchone()[0]
+                
+                # Get top tags
+                top_tags = dict(conn.execute("""
+                    SELECT t.name, COUNT(*) as count 
+                    FROM tags t 
+                    JOIN document_tags dt ON t.id = dt.tag_id 
+                    GROUP BY t.name 
+                    ORDER BY count DESC 
+                    LIMIT 5
+                """).fetchall())
+                
+                if doc_count > 0:
+                    status = "✅"
+                    healthy_count += 1
+                else:
+                    status = "❌"
+                    issues.append("No documents in metadata store")
+                    
+                health_stats['metadata_store'] = {
+                    "status": status,
+                    "document_count": doc_count,
+                    "tag_count": tag_count,
+                    "top_tags": top_tags
+                }
+            except Exception as e:
+                status = "❌"
+                issues.append(f"Metadata error: {str(e)}")
+                health_stats['metadata_store'] = {
+                    "status": status,
+                    "error": str(e)
+                }
+            finally:
+                conn.close()
+        else:
+            status = "⚠️"
+            health_stats['metadata_store'] = {
+                "status": status,
+                "note": "Metadata database not present (optional)"
+            }
+    except Exception as e:
+        status = "❌"
+        issues.append(f"Metadata check failed: {str(e)}")
+        health_stats['metadata_store'] = {
+            "status": status,
+            "error": str(e)
+        }
+
+    # 5. Sources
+    total_count += 1
+    try:
+        if (db_path / "store.db").exists():
+            conn = sqlite3.connect(str(db_path / "store.db"))
+            try:
+                sources = dict(conn.execute("""
+                    SELECT json_extract(metadata, '$.source_name') as source, COUNT(*) as count
+                    FROM documents 
+                    WHERE json_extract(metadata, '$.source_name') IS NOT NULL
+                    GROUP BY source
+                """).fetchall())
+                
+                if sources:
+                    status = "✅"
+                    healthy_count += 1
+                else:
+                    status = "⚠️"
+                    issues.append("No source breakdown available")
+                    
+                health_stats['sources'] = {
+                    "status": status,
+                    "breakdown": sources
+                }
+            except Exception as e:
+                status = "❌"
+                issues.append(f"Sources error: {str(e)}")
+                health_stats['sources'] = {
+                    "status": status,
+                    "error": str(e)
+                }
+            finally:
+                conn.close()
+        else:
+            status = "❌"
+            issues.append("Sources database missing")
+            health_stats['sources'] = {
+                "status": status,
+                "error": "store.db not found"
+            }
+    except Exception as e:
+        status = "❌"
+        issues.append(f"Sources check failed: {str(e)}")
+        health_stats['sources'] = {
+            "status": status,
+            "error": str(e)
+        }
+
+    # 6. Daemon (if socket exists or path given)
+    if check_daemon:
+        total_count += 1
+        try:
+            daemon_health = _query_daemon(daemon_socket, {"cmd": "health"})
+            
+            if daemon_health.get('status') == 'ok':
+                status = "✅"
+                healthy_count += 1
+                health_stats['daemon'] = {
+                    "status": status,
+                    "uptime_seconds": daemon_health.get('uptime_seconds', 0),
+                    "requests_served": daemon_health.get('requests_served', 0),
+                    "components": daemon_health.get('components', {}),
+                    "fd_count": daemon_health.get('fd_count', 0),
+                    "search_test": daemon_health.get('search_test', False),
+                    "store": daemon_health.get('store', {}),
+                    "graph": daemon_health.get('graph', {}),
+                    "fts5_count": daemon_health.get('fts5_count', 0)
+                }
+            else:
+                status = "❌"
+                issues.append(f"Daemon unhealthy: {daemon_health}")
+                health_stats['daemon'] = {
+                    "status": status,
+                    "error": daemon_health
+                }
+        except Exception as e:
+            status = "❌"
+            issues.append(f"Daemon check failed: {str(e)}")
+            health_stats['daemon'] = {
+                "status": status,
+                "error": str(e)
+            }
+
+    # Output results
+    if output_format == 'json':
+        result = {
+            "summary": {
+                "healthy_components": healthy_count,
+                "total_components": total_count,
+                "overall_health": healthy_count == total_count
+            },
+            "components": health_stats,
+            "issues": issues
+        }
+        click.echo(json.dumps(result, indent=2))
+    else:
+        # Text format
+        click.echo(info("Velocirag Health Check"))
+        click.echo()
+        
+        # Vector Store
+        vs = health_stats.get('vector_store', {})
+        click.echo(f"{vs.get('status', '❌')} Vector Store")
+        if 'document_count' in vs:
+            click.echo(f"   Documents: {vs['document_count']}")
+            click.echo(f"   FAISS vectors: {vs['faiss_vectors']}")
+            click.echo(f"   Consistent: {vs['consistent']}")
+        elif 'error' in vs:
+            click.echo(f"   Error: {vs['error']}")
+        
+        # FTS5 Index  
+        fts = health_stats.get('fts5_index', {})
+        click.echo(f"{fts.get('status', '❌')} FTS5 Index")
+        if 'entry_count' in fts:
+            click.echo(f"   Entries: {fts['entry_count']}")
+            click.echo(f"   Synced: {fts['synced_with_docs']}")
+            click.echo(f"   Test query results: {fts.get('test_query_results', 0)}")
+        elif 'error' in fts:
+            click.echo(f"   Error: {fts['error']}")
+        
+        # Knowledge Graph
+        kg = health_stats.get('knowledge_graph', {})
+        click.echo(f"{kg.get('status', '❌')} Knowledge Graph")
+        if 'node_count' in kg:
+            click.echo(f"   Nodes: {kg['node_count']}")
+            click.echo(f"   Edges: {kg['edge_count']}")
+            click.echo(f"   GLiNER entities: {kg['gliner_entities']}")
+            if kg['node_types']:
+                types_str = ', '.join(f"{k}:{v}" for k, v in list(kg['node_types'].items())[:3])
+                click.echo(f"   Node types: {types_str}")
+        elif 'error' in kg:
+            click.echo(f"   Error: {kg['error']}")
+        elif 'note' in kg:
+            click.echo(f"   {kg['note']}")
+        
+        # Metadata Store
+        ms = health_stats.get('metadata_store', {})
+        click.echo(f"{ms.get('status', '❌')} Metadata Store")
+        if 'document_count' in ms:
+            click.echo(f"   Documents: {ms['document_count']}")
+            click.echo(f"   Tags: {ms['tag_count']}")
+            if ms['top_tags']:
+                tags_str = ', '.join(f"{k}({v})" for k, v in list(ms['top_tags'].items())[:3])
+                click.echo(f"   Top tags: {tags_str}")
+        elif 'error' in ms:
+            click.echo(f"   Error: {ms['error']}")
+        elif 'note' in ms:
+            click.echo(f"   {ms['note']}")
+        
+        # Sources
+        src = health_stats.get('sources', {})
+        click.echo(f"{src.get('status', '❌')} Sources")
+        if 'breakdown' in src:
+            if src['breakdown']:
+                breakdown_str = ', '.join(f"{k}({v})" for k, v in list(src['breakdown'].items())[:3])
+                click.echo(f"   Breakdown: {breakdown_str}")
+            else:
+                click.echo("   No source metadata")
+        elif 'error' in src:
+            click.echo(f"   Error: {src['error']}")
+        
+        # Daemon (if checked)
+        if check_daemon:
+            daemon = health_stats.get('daemon', {})
+            click.echo(f"{daemon.get('status', '❌')} Daemon")
+            if 'uptime_seconds' in daemon:
+                click.echo(f"   Uptime: {daemon['uptime_seconds']}s")
+                click.echo(f"   Requests: {daemon['requests_served']}")
+                click.echo(f"   FD count: {daemon['fd_count']}")
+                click.echo(f"   Search test: {daemon['search_test']}")
+                components = daemon['components']
+                comp_str = ', '.join(k for k, v in components.items() if v)
+                click.echo(f"   Components: {comp_str}")
+            elif 'error' in daemon:
+                click.echo(f"   Error: {daemon['error']}")
+        
+        # Summary
+        click.echo()
+        if healthy_count == total_count:
+            click.echo(success(f"✅ {healthy_count}/{total_count} components healthy"))
+        else:
+            click.echo(warning(f"⚠️ {healthy_count}/{total_count} components healthy"))
+            if issues:
+                click.echo()
+                click.echo(error("Issues found:"))
+                for issue in issues:
+                    click.echo(f"  • {issue}")
+
+
+@cli.command()
+@click.option('--db', type=click.Path(), default=None,
+              help='Database path (default: ./.velocirag/)')
 @click.option('--yes', '-y', is_flag=True,
               help='Skip confirmation prompt')
 @click.pass_context
