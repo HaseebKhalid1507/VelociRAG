@@ -375,6 +375,20 @@ class GLiNERAnalyzer:
                 )
         return self._model
     
+    @staticmethod
+    def _chunk_for_gliner(text: str, max_chars: int = 1500, overlap: int = 200) -> List[str]:
+        """Chunk text for GLiNER processing. Model max is ~512 tokens (~1500 chars)."""
+        if len(text) <= max_chars:
+            return [text]
+        
+        chunks = []
+        start = 0
+        while start < len(text):
+            end = start + max_chars
+            chunks.append(text[start:end])
+            start = end - overlap  # Overlap to catch entities at boundaries
+        return chunks
+    
     def analyze(self, nodes: List[Node]) -> Tuple[List[Node], List[Edge]]:
         """Extract entities using GLiNER and create graph nodes + edges."""
         model = self._load_model()
@@ -387,25 +401,32 @@ class GLiNERAnalyzer:
         entity_counts = Counter()
         
         for node in nodes:
-            if node.type != NodeType.NOTE or not node.content:
+            if node.type != NodeType.NOTE or not node.content or not node.content.strip():
                 continue
             
-            # GLiNER has a max sequence length — chunk text if needed
-            text = node.content[:4096]  # Reasonable limit
+            # GLiNER max sequence ~512 tokens. ~1500 chars is safe.
+            # Chunk longer texts with overlap to catch entities at boundaries.
+            chunks = self._chunk_for_gliner(node.content)
             
             try:
-                entities = model.predict_entities(text, self.labels, threshold=self.threshold)
                 node_entities = []
-                for e in entities:
-                    entity_text = e['text'].strip()
-                    if len(entity_text) < 2:
-                        continue
-                    node_entities.append({
-                        'text': entity_text,
-                        'label': e['label'],
-                        'score': e['score']
-                    })
-                    entity_counts[entity_text.lower()] += 1
+                seen_spans = set()  # dedupe across chunks
+                
+                for chunk in chunks:
+                    entities = model.predict_entities(chunk, self.labels, threshold=self.threshold)
+                    for e in entities:
+                        entity_text = e['text'].strip()
+                        if len(entity_text) < 2:
+                            continue
+                        key = (entity_text.lower(), e['label'])
+                        if key not in seen_spans:
+                            seen_spans.add(key)
+                            node_entities.append({
+                                'text': entity_text,
+                                'label': e['label'],
+                                'score': e['score']
+                            })
+                            entity_counts[entity_text.lower()] += 1
                 
                 all_entities[node.id] = node_entities
             except Exception as ex:

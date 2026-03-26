@@ -184,12 +184,14 @@ class VectorStore:
                 
                 # Also insert into FTS5 table for keyword search
                 file_path = metadata.get('file_path', doc_id)
-                # FTS5 doesn't handle REPLACE well, so delete then insert
-                conn.execute('DELETE FROM chunks_fts WHERE doc_id = ?', (doc_id,))
-                conn.execute(
-                    'INSERT INTO chunks_fts (doc_id, content, file_path) VALUES (?, ?, ?)',
-                    (doc_id, content, file_path)
-                )
+                try:
+                    conn.execute('DELETE FROM chunks_fts WHERE doc_id = ?', (doc_id,))
+                    conn.execute(
+                        'INSERT INTO chunks_fts (doc_id, content, file_path) VALUES (?, ?, ?)',
+                        (doc_id, content or '', file_path)
+                    )
+                except Exception as e:
+                    logger.warning(f"FTS5 insert failed for {doc_id}: {e}")
 
         self._index_dirty = True
         
@@ -465,9 +467,23 @@ class VectorStore:
     def keyword_search(self, query: str, limit: int = 15) -> list:
         """BM25 keyword search via FTS5. Returns results ranked by relevance."""
         with self._connect() as conn:
-            # FTS5 match query — escape special chars
-            # FTS5 uses double quotes for phrase, OR/AND/NOT for boolean
-            safe_query = query.replace('"', '""')
+            if not query or not query.strip():
+                return []
+            
+            # Escape for FTS5: wrap each word in quotes to prevent syntax issues
+            # FTS5 special chars: *, ^, (, ), -, AND, OR, NOT, NEAR
+            words = query.strip().split()
+            safe_tokens = []
+            for word in words:
+                # Strip FTS5 operators, wrap in quotes for exact matching
+                cleaned = word.replace('"', '').replace("'", "")
+                if cleaned:
+                    safe_tokens.append(f'"{cleaned}"')
+            
+            if not safe_tokens:
+                return []
+            
+            safe_query = ' '.join(safe_tokens)
             
             try:
                 rows = conn.execute('''
@@ -480,8 +496,9 @@ class VectorStore:
                     LIMIT ?
                 ''', (safe_query, limit)).fetchall()
             except Exception:
-                # If FTS5 match syntax fails, try with quotes (phrase search)
+                # Last resort: try as a single phrase
                 try:
+                    phrase = query.replace('"', '').replace("'", "")
                     rows = conn.execute('''
                         SELECT doc_id, file_path,
                                snippet(chunks_fts, 1, '', '', '...', 64) as snippet,
@@ -490,7 +507,7 @@ class VectorStore:
                         WHERE chunks_fts MATCH ?
                         ORDER BY rank
                         LIMIT ?
-                    ''', (f'"{safe_query}"', limit)).fetchall()
+                    ''', (f'"{phrase}"', limit)).fetchall()
                 except Exception:
                     return []
             

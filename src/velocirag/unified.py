@@ -251,17 +251,20 @@ class UnifiedSearch:
                     '_rank': i + 1
                 })
         
-        # Normalize keyword results
+        # Normalize keyword results — preserve BM25 rank ordering
         keyword_ranked = []
         for i, result in enumerate(keyword_results):
             doc_id = result.get('doc_id', '')
             filename = result.get('file_path', '')
             if filename:
+                # FTS5 rank is negative (lower = better). Normalize to 0-1.
+                bm25_rank = result.get('bm25_rank', 0)
+                normalized_score = max(0.0, min(1.0, 1.0 + (bm25_rank / 50.0)))
                 keyword_ranked.append({
                     'doc_id': filename,
-                    'score': 1.0,  # Keyword matches get uniform high score for RRF
+                    'score': normalized_score,
                     'content': result.get('snippet', ''),
-                    'metadata': {'bm25_rank': result.get('bm25_rank', 0)},
+                    'metadata': {'bm25_rank': bm25_rank},
                     '_source': 'keyword',
                     '_rank': i + 1
                 })
