@@ -336,7 +336,7 @@ class TestUnifiedSearch:
         
         # Should find results
         assert len(results['results']) > 0
-        assert results['search_mode'] == 'vector_graph'
+        assert results['search_mode'] == 'unified_full'  # vector + keyword + graph
         
         # At least one result should be enriched
         enriched = [r for r in results['results'] if r['metadata']['found_in_graph']]

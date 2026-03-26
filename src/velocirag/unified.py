@@ -52,6 +52,7 @@ class UnifiedSearch:
             raise ValueError("Searcher is required")
         
         self.searcher = searcher
+        self.store = getattr(searcher, 'store', None)  # Reference to VectorStore for keyword search
         self.graph_store = graph_store
         self.graph_querier = GraphQuerier(graph_store) if graph_store else None
         self.metadata_store = metadata_store
@@ -115,19 +116,34 @@ class UnifiedSearch:
         except Exception as e:
             raise UnifiedSearchError(f"Vector search failed: {e}")
         
-        # === LAYER 2: METADATA SEARCH ===
-        # Runs if metadata_store exists
+        # === LAYER 2: KEYWORD SEARCH (BM25 via FTS5) ===
+        keyword_results = []
+        if hasattr(self, 'store') and self.store and hasattr(self.store, 'keyword_search'):
+            keyword_start = time.time()
+            try:
+                keyword_results = self.store.keyword_search(query, limit=limit * 3)
+                layer_stats['keyword'] = {
+                    'candidates': len(keyword_results),
+                    'time_ms': round((time.time() - keyword_start) * 1000, 2),
+                    'search_type': 'bm25_fts5'
+                }
+            except Exception as e:
+                logger.warning(f"Keyword search failed: {e}")
+                layer_stats['keyword'] = {
+                    'candidates': 0,
+                    'time_ms': 0,
+                    'error': str(e)
+                }
+        
+        # Also run metadata title search if metadata store exists
         metadata_results = []
         if self.metadata_store:
             metadata_start = time.time()
             try:
                 if filters:
-                    # Filtered query — use provided filters
                     metadata_docs = self.metadata_store.query(**filters, limit=limit * 3)
                 else:
-                    # Unfiltered query — text search against titles
                     metadata_docs = self._search_metadata_titles(query, limit=limit * 3)
-                
                 metadata_results = metadata_docs
                 layer_stats['metadata'] = {
                     'candidates': len(metadata_results),
@@ -235,6 +251,21 @@ class UnifiedSearch:
                     '_rank': i + 1
                 })
         
+        # Normalize keyword results
+        keyword_ranked = []
+        for i, result in enumerate(keyword_results):
+            doc_id = result.get('doc_id', '')
+            filename = result.get('file_path', '')
+            if filename:
+                keyword_ranked.append({
+                    'doc_id': filename,
+                    'score': 1.0,  # Keyword matches get uniform high score for RRF
+                    'content': result.get('snippet', ''),
+                    'metadata': {'bm25_rank': result.get('bm25_rank', 0)},
+                    '_source': 'keyword',
+                    '_rank': i + 1
+                })
+        
         # Normalize metadata results: extract filename and create ranked list
         metadata_ranked = []
         for i, result in enumerate(metadata_results):
@@ -267,10 +298,12 @@ class UnifiedSearch:
                     '_rank': i + 1
                 })
         
-        # === STEP 5: RRF FUSION ACROSS ALL 3 LAYERS ===
+        # === STEP 5: RRF FUSION ACROSS ALL LAYERS ===
         available_lists = []
         if vector_ranked:
             available_lists.append(vector_ranked)
+        if keyword_ranked:
+            available_lists.append(keyword_ranked)
         if metadata_ranked:
             available_lists.append(metadata_ranked)
         if graph_ranked:
@@ -427,6 +460,9 @@ class UnifiedSearch:
         # Based on what layers were attempted, not what returned results
         layers_attempted = ['vector']  # Vector always runs
         
+        if hasattr(self, 'store') and self.store and hasattr(self.store, 'keyword_search'):
+            layers_attempted.append('keyword')
+        
         if self.metadata_store:
             layers_attempted.append('metadata')
         
@@ -469,7 +505,8 @@ class UnifiedSearch:
                 'graph_enriched': graph_enriched_count,
                 'graph_available': bool(self.graph_store and enrich_graph),
                 'metadata_available': bool(self.metadata_store),
-                'metadata_matches': len(metadata_results) if self.metadata_store else 0
+                'metadata_matches': len(metadata_results) if self.metadata_store else 0,
+                'keyword_matches': len(keyword_results)
             }
         }
         

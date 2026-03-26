@@ -181,6 +181,15 @@ class VectorStore:
                     (doc_id, content, metadata, embedding, l0_abstract, l1_overview, l0_embedding, l1_embedding)
                     VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 ''', (doc_id, content, metadata_json, embedding_blob, l0_abstract, l1_overview, l0_blob, l1_blob))
+                
+                # Also insert into FTS5 table for keyword search
+                file_path = metadata.get('file_path', doc_id)
+                # FTS5 doesn't handle REPLACE well, so delete then insert
+                conn.execute('DELETE FROM chunks_fts WHERE doc_id = ?', (doc_id,))
+                conn.execute(
+                    'INSERT INTO chunks_fts (doc_id, content, file_path) VALUES (?, ?, ?)',
+                    (doc_id, content, file_path)
+                )
 
         self._index_dirty = True
         
@@ -452,6 +461,61 @@ class VectorStore:
                 })
         
         return results
+
+    def keyword_search(self, query: str, limit: int = 15) -> list:
+        """BM25 keyword search via FTS5. Returns results ranked by relevance."""
+        with self._connect() as conn:
+            # FTS5 match query — escape special chars
+            # FTS5 uses double quotes for phrase, OR/AND/NOT for boolean
+            safe_query = query.replace('"', '""')
+            
+            try:
+                rows = conn.execute('''
+                    SELECT doc_id, file_path, 
+                           snippet(chunks_fts, 1, '', '', '...', 64) as snippet,
+                           rank
+                    FROM chunks_fts 
+                    WHERE chunks_fts MATCH ?
+                    ORDER BY rank
+                    LIMIT ?
+                ''', (safe_query, limit)).fetchall()
+            except Exception:
+                # If FTS5 match syntax fails, try with quotes (phrase search)
+                try:
+                    rows = conn.execute('''
+                        SELECT doc_id, file_path,
+                               snippet(chunks_fts, 1, '', '', '...', 64) as snippet,
+                               rank
+                        FROM chunks_fts 
+                        WHERE chunks_fts MATCH ?
+                        ORDER BY rank
+                        LIMIT ?
+                    ''', (f'"{safe_query}"', limit)).fetchall()
+                except Exception:
+                    return []
+            
+            results = []
+            for row in rows:
+                results.append({
+                    'doc_id': row[0],
+                    'file_path': row[1],
+                    'snippet': row[2],
+                    'bm25_rank': row[3],  # FTS5 rank (negative, lower = better)
+                })
+            return results
+
+    def rebuild_fts(self):
+        """Rebuild FTS5 index from existing documents table."""
+        with self._transaction() as conn:
+            conn.execute('DELETE FROM chunks_fts')
+            conn.execute('''
+                INSERT INTO chunks_fts (doc_id, content, file_path)
+                SELECT doc_id, content, 
+                       json_extract(metadata, '$.file_path')
+                FROM documents
+                WHERE content IS NOT NULL
+            ''')
+        return True
 
     def get(self, doc_id: str) -> Optional[Dict]:
         """Retrieve document by ID."""
@@ -743,11 +807,31 @@ class VectorStore:
                 )
             ''')
             
+            # FTS5 full-text search table for keyword/BM25 retrieval
+            conn.execute('''
+                CREATE VIRTUAL TABLE IF NOT EXISTS chunks_fts USING fts5(
+                    doc_id,
+                    content,
+                    file_path,
+                    tokenize='porter unicode61'
+                )
+            ''')
+            
             # Metadata table
             conn.execute('''
                 CREATE TABLE IF NOT EXISTS metadata (
                     key TEXT PRIMARY KEY,
                     value TEXT NOT NULL
+                )
+            ''')
+            
+            # FTS5 full-text search table for BM25 keyword retrieval
+            conn.execute('''
+                CREATE VIRTUAL TABLE IF NOT EXISTS chunks_fts USING fts5(
+                    doc_id,
+                    content,
+                    file_path,
+                    tokenize='porter unicode61'
                 )
             ''')
             
@@ -757,6 +841,9 @@ class VectorStore:
             
             # Check and migrate schema if needed
             self._migrate_schema(conn)
+            
+            # Ensure all changes are committed
+            conn.commit()
 
     def _migrate_schema(self, conn) -> None:
         """Handle schema migrations."""
@@ -803,12 +890,11 @@ class VectorStore:
             
             logger.info("Schema migration complete.")
         
-        # Set schema version if new DB
-        if current_version < CURRENT_SCHEMA_VERSION:
-            conn.execute('''
-                INSERT OR REPLACE INTO metadata (key, value) 
-                VALUES ('schema_version', ?)
-            ''', (str(CURRENT_SCHEMA_VERSION),))
+        # Set schema version for new DBs or update after migration
+        conn.execute('''
+            INSERT OR REPLACE INTO metadata (key, value) 
+            VALUES ('schema_version', ?)
+        ''', (str(CURRENT_SCHEMA_VERSION),))
 
     def _load_faiss_index(self) -> None:
         """Load FAISS indices from disk."""
@@ -936,6 +1022,11 @@ class VectorStore:
             # Delete by doc_id prefix - uses index, no JSON parsing
             conn.execute('''
                 DELETE FROM documents WHERE doc_id LIKE ?
+            ''', (prefix + '%',))
+            
+            # Also delete from FTS5 table
+            conn.execute('''
+                DELETE FROM chunks_fts WHERE doc_id LIKE ?
             ''', (prefix + '%',))
 
     def _cleanup_deleted_files(self, base_path: Path, source_name: str) -> int:
