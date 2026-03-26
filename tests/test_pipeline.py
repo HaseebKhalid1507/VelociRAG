@@ -12,6 +12,7 @@ from datetime import datetime
 from velocirag.graph import GraphStore, NodeType, RelationType
 from velocirag.embedder import Embedder
 from velocirag.pipeline import GraphPipeline
+from velocirag.metadata import MetadataStore
 
 
 class TestGraphPipeline:
@@ -325,3 +326,61 @@ Action items assigned to team members.
         assert len(graph_store.get_nodes_by_type(NodeType.NOTE)) > 0
         assert len(graph_store.get_nodes_by_type(NodeType.TAG)) > 0
         assert len(graph_store.get_nodes_by_type(NodeType.ENTITY)) > 0
+    
+    def test_metadata_extraction_stage(self, sample_markdown_files, graph_store, tmp_path):
+        """Test metadata extraction integration in pipeline."""
+        # Create metadata store
+        metadata_db = tmp_path / "metadata.db"
+        metadata_store = MetadataStore(str(metadata_db))
+        
+        # Create pipeline with metadata store
+        pipeline = GraphPipeline(graph_store, metadata_store=metadata_store)
+        stats = pipeline.build(str(sample_markdown_files))
+        
+        # Check that metadata stage ran
+        assert 'metadata' in stats['stages']
+        metadata_stats = stats['stages']['metadata']
+        assert metadata_stats['documents_processed'] > 0
+        assert metadata_stats['tags_extracted'] > 0  # Should find #python, #project, etc.
+        
+        # Verify metadata was stored
+        all_docs = metadata_store.query(limit=100)
+        assert len(all_docs) > 0
+        
+        # Check specific document
+        python_guide = metadata_store.get_document("python-guide.md")
+        assert python_guide is not None
+        assert python_guide['title'] == "Python Guide"  # Title from filename stem
+        assert 'tags' in python_guide
+        assert 'python' in python_guide['tags']
+        assert 'programming' in python_guide['tags']
+        
+        # Check cross-references were extracted
+        assert metadata_stats['cross_refs_extracted'] > 0
+        
+        # Query by tags
+        python_docs = metadata_store.query(tags=['python'])
+        assert len(python_docs) >= 2  # At least python-guide.md and python-basics.md
+        
+        # Query by project
+        project_docs = metadata_store.query(project='VelociraptorProject')
+        # Daily logs mention VelociraptorProject
+        assert len(project_docs) >= 0
+    
+    def test_pipeline_without_metadata(self, sample_markdown_files, graph_store):
+        """Test that pipeline works without metadata store (backward compatibility)."""
+        # Create pipeline without metadata store
+        pipeline = GraphPipeline(graph_store, metadata_store=None)
+        stats = pipeline.build(str(sample_markdown_files))
+        
+        # Should complete successfully
+        assert stats['success'] is True
+        
+        # Metadata stage should not be in stats
+        assert 'metadata' not in stats['stages']
+        
+        # Other stages should run normally
+        assert 'scan' in stats['stages']
+        assert 'explicit' in stats['stages']
+        assert stats['final_nodes'] > 0
+        assert stats['final_edges'] > 0

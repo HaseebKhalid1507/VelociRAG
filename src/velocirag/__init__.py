@@ -1,6 +1,6 @@
 """Velocirag — Progressive multi-layer RAG engine for markdown knowledge bases."""
 
-__version__ = "0.2.0"
+__version__ = "0.3.0"
 
 from .chunker import chunk_markdown
 from .variants import generate_variants
@@ -17,3 +17,6 @@ from .analyzers import (
 from .pipeline import GraphPipeline
 from .unified import UnifiedSearch
 from .abstracts import AbstractGenerator, AbstractResult
+from .metadata import MetadataStore
+from .frontmatter import parse_frontmatter, extract_tags_from_content, extract_wiki_links
+from .tracker import UsageTracker

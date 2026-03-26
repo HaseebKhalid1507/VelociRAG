@@ -20,6 +20,11 @@ try:
     from .store import VectorStore
     from .embedder import Embedder
     from .searcher import Searcher
+    from .metadata import MetadataStore
+    from .tracker import UsageTracker
+    from .graph import GraphStore
+    from .pipeline import GraphPipeline
+    from .unified import UnifiedSearch
 except ImportError as e:
     click.echo(f"Error: Missing dependencies. Please run 'pip install velocirag'", err=True)
     sys.exit(1)
@@ -115,8 +120,12 @@ def cli(ctx, verbose: bool):
               help='Source identifier for this content')
 @click.option('--force', '-f', is_flag=True,
               help='Force reindex all files (ignore mtime cache)')
+@click.option('--graph', '-g', is_flag=True,
+              help='Build knowledge graph during indexing')
+@click.option('--metadata', '-m', is_flag=True,
+              help='Extract metadata from frontmatter and content')
 @click.pass_context
-def index(ctx, path: str, db: Optional[str], source: str, force: bool):
+def index(ctx, path: str, db: Optional[str], source: str, force: bool, graph: bool, metadata: bool):
     """
     Index a directory of markdown files.
     
@@ -197,6 +206,82 @@ def index(ctx, path: str, db: Optional[str], source: str, force: bool):
             if len(stats['errors']) > 5:
                 click.echo(f"  ... and {len(stats['errors']) - 5} more")
         
+        # Build graph if requested
+        if graph:
+            click.echo()
+            click.echo(f"Building knowledge graph...")
+            try:
+                graph_db = db_path / "graph.db"
+                graph_store = GraphStore(str(graph_db))
+                
+                metadata_store_obj = None
+                if metadata:
+                    metadata_db = db_path / "metadata.db"
+                    metadata_store_obj = MetadataStore(str(metadata_db))
+                
+                pipeline = GraphPipeline(
+                    graph_store=graph_store,
+                    embedder=embedder,
+                    metadata_store=metadata_store_obj
+                )
+                
+                graph_stats = pipeline.build(str(path), force_rebuild=force)
+                
+                if graph_stats.get('success'):
+                    click.echo(success("Graph build complete:"))
+                    click.echo(f"  Nodes: {graph_stats['final_nodes']}")
+                    click.echo(f"  Edges: {graph_stats['final_edges']}")
+                    click.echo(f"  Time: {graph_stats['duration_seconds']:.1f}s")
+                    
+                    if metadata and 'metadata' in graph_stats.get('stages', {}):
+                        meta_stats = graph_stats['stages']['metadata']
+                        click.echo()
+                        click.echo(success("Metadata extraction:"))
+                        click.echo(f"  Documents: {meta_stats['documents_processed']}")
+                        click.echo(f"  Tags extracted: {meta_stats['tags_extracted']}")
+                        click.echo(f"  Cross-refs: {meta_stats['cross_refs_extracted']}")
+                else:
+                    click.echo(error(f"Graph build failed: {graph_stats.get('error', 'Unknown error')}"))
+                    
+            except Exception as e:
+                click.echo(error(f"Graph build failed: {e}"))
+                if verbose:
+                    import traceback
+                    traceback.print_exc()
+        
+        # Extract metadata without graph if requested
+        elif metadata:
+            click.echo()
+            click.echo(f"Extracting metadata...")
+            try:
+                metadata_db = db_path / "metadata.db"
+                metadata_store_obj = MetadataStore(str(metadata_db))
+                
+                # Create a minimal pipeline just for metadata extraction
+                graph_store = GraphStore(":memory:")  # Temporary in-memory graph
+                pipeline = GraphPipeline(
+                    graph_store=graph_store,
+                    embedder=None,  # No embedder needed for metadata only
+                    metadata_store=metadata_store_obj
+                )
+                
+                # Just run the first two stages
+                pipeline._stage_1_scan_files(str(path))
+                pipeline._stage_2_metadata_extraction()
+                
+                if 'metadata' in pipeline.stats.get('stages', {}):
+                    meta_stats = pipeline.stats['stages']['metadata']
+                    click.echo(success("Metadata extraction complete:"))
+                    click.echo(f"  Documents: {meta_stats['documents_processed']}")
+                    click.echo(f"  Tags extracted: {meta_stats['tags_extracted']}")
+                    click.echo(f"  Cross-refs: {meta_stats['cross_refs_extracted']}")
+                    
+            except Exception as e:
+                click.echo(error(f"Metadata extraction failed: {e}"))
+                if verbose:
+                    import traceback
+                    traceback.print_exc()
+        
         click.echo()
         click.echo(success("Index ready for search."))
         
@@ -221,9 +306,18 @@ def index(ctx, path: str, db: Optional[str], source: str, force: bool):
               help='Output format (default: text)')
 @click.option('--stats', is_flag=True,
               help='Include search performance statistics')
+@click.option('--tags', multiple=True,
+              help='Filter results by tags (metadata filter)')
+@click.option('--status', default=None,
+              help='Filter results by status (metadata filter)')
+@click.option('--category', default=None,
+              help='Filter results by category (metadata filter)')
+@click.option('--project', default=None,
+              help='Filter results by project (metadata filter)')
 @click.pass_context  
 def search(ctx, query: str, db: Optional[str], limit: int, 
-          threshold: float, output_format: str, stats: bool):
+          threshold: float, output_format: str, stats: bool,
+          tags: tuple, status: str, category: str, project: str):
     """
     Search indexed content using semantic similarity.
     
@@ -272,15 +366,68 @@ def search(ctx, query: str, db: Optional[str], limit: int,
             click.echo(warning("No documents indexed. Run 'velocirag index <path>' first."))
             return
         
+        # Initialize optional components
+        graph_store = None
+        metadata_store = None
+        tracker = None
+        
+        # Check for graph database
+        graph_db = db_path / "graph.db"
+        if graph_db.exists():
+            try:
+                graph_store = GraphStore(str(graph_db))
+                if verbose:
+                    click.echo("Graph database found and loaded")
+            except Exception as e:
+                if verbose:
+                    click.echo(warning(f"Could not load graph database: {e}"))
+        
+        # Check for metadata database
+        metadata_db = db_path / "metadata.db"
+        if metadata_db.exists():
+            try:
+                metadata_store = MetadataStore(str(metadata_db))
+                tracker = UsageTracker(metadata_store)
+                if verbose:
+                    click.echo("Metadata database found and loaded")
+            except Exception as e:
+                if verbose:
+                    click.echo(warning(f"Could not load metadata database: {e}"))
+        
+        # Build metadata filters if provided
+        filters = None
+        if any([tags, status, category, project]):
+            filters = {}
+            if tags:
+                filters['tags'] = list(tags)
+            if status:
+                filters['status'] = status
+            if category:
+                filters['category'] = category
+            if project:
+                filters['project'] = project
+            
+            if verbose:
+                click.echo(f"Applying metadata filters: {filters}")
+        
+        # Create unified search
+        unified_search = UnifiedSearch(
+            searcher=searcher,
+            graph_store=graph_store,
+            metadata_store=metadata_store,
+            tracker=tracker
+        )
+        
         # Execute search
         if verbose:
             click.echo(f"Searching for: '{query}'")
         
-        results = searcher.search(
+        results = unified_search.search(
             query=query,
             limit=limit,
             threshold=threshold,
-            include_stats=stats or verbose
+            enrich_graph=True,
+            filters=filters
         )
         
         # Format output
@@ -307,14 +454,17 @@ def search(ctx, query: str, db: Optional[str], limit: int,
             
             # Header
             click.echo(f"Query: \"{query}\"")
-            click.echo(info(f"Found {total_results} result{'s' if total_results != 1 else ''} in {search_time:.0f}ms"))
+            mode_str = f" ({results.get('search_mode', 'vector')})" if verbose else ""
+            click.echo(info(f"Found {total_results} result{'s' if total_results != 1 else ''} in {search_time:.0f}ms{mode_str}"))
             click.echo()
             
             # Results
             for i, result in enumerate(results['results'], 1):
-                similarity = result['similarity']
-                doc_id = result['doc_id']
-                content = result['content']
+                # Handle both old format (similarity) and new format (score)
+                similarity = result.get('similarity', result.get('score', 0))
+                doc_id = result.get('doc_id', '')
+                content = result.get('content', result.get('chunk', ''))
+                metadata = result.get('metadata', {})
                 
                 # Similarity score with color coding
                 if similarity >= 0.8:
@@ -324,6 +474,10 @@ def search(ctx, query: str, db: Optional[str], limit: int,
                 else:
                     score_str = f"[{similarity:.3f}]"
                 
+                # Add metadata match indicator
+                if metadata.get('_metadata_match'):
+                    score_str += " " + success("✓")
+                
                 click.echo(f"{i}. {score_str} {doc_id}")
                 
                 # Content preview (truncated)
@@ -332,26 +486,44 @@ def search(ctx, query: str, db: Optional[str], limit: int,
                     preview += "..."
                 click.echo(f"   {preview}")
                 
+                # Show graph connections if available
+                if metadata.get('graph_connections'):
+                    connections = metadata['graph_connections'][:3]
+                    click.echo(f"   Connections: {', '.join(connections)}")
+                
+                # Show metadata if filters were used
+                if filters and metadata.get('found_in_graph'):
+                    file_path = metadata.get('file_path', '')
+                    if file_path:
+                        click.echo(f"   File: {Path(file_path).name}")
+                
                 if i < len(results['results']):  # Don't add newline after last result
                     click.echo()
             
             # Optional stats
-            if stats and 'stats' in results:
+            if stats:
                 click.echo()
                 click.echo(info("Search Statistics:"))
-                search_stats = results['stats']
                 
-                if 'variants' in search_stats:
-                    click.echo(f"  Query variants: {len(search_stats['variants'])}")
-                    for variant_stat in search_stats['variants'][:3]:  # Show first 3
-                        click.echo(f"    • '{variant_stat['variant']}' → {variant_stat['results_found']} results")
+                # Enrichment stats
+                if 'enrichment_stats' in results:
+                    enrich = results['enrichment_stats']
+                    click.echo(f"  Vector results: {enrich['vector_results']}")
+                    if enrich.get('metadata_available'):
+                        click.echo(f"  Metadata matches: {enrich.get('metadata_matches', 0)}")
+                    if enrich.get('graph_available'):
+                        click.echo(f"  Graph enriched: {enrich['graph_enriched']}")
                 
-                if 'embedding_time_ms' in search_stats:
-                    click.echo(f"  Embedding time: {search_stats['embedding_time_ms']:.1f}ms")
-                if 'search_time_ms' in search_stats:
-                    click.echo(f"  Vector search: {search_stats['search_time_ms']:.1f}ms")
-                if 'rrf_fusion_ms' in search_stats:
-                    click.echo(f"  RRF fusion: {search_stats['rrf_fusion_ms']:.1f}ms")
+                # Timing breakdown
+                click.echo()
+                click.echo("  Timing:")
+                if 'vector_time_ms' in results:
+                    click.echo(f"    Vector search: {results['vector_time_ms']:.1f}ms")
+                if 'metadata_time_ms' in results:
+                    click.echo(f"    Metadata query: {results['metadata_time_ms']:.1f}ms")
+                if 'fusion_time_ms' in results:
+                    click.echo(f"    RRF fusion: {results['fusion_time_ms']:.1f}ms")
+                click.echo(f"    Total: {search_time:.1f}ms")
         
     except Exception as e:
         click.echo(error(f"Search failed: {e}"), err=True)
@@ -551,6 +723,182 @@ def reindex(ctx, db: Optional[str], yes: bool):
         sys.exit(1)
     except Exception as e:
         click.echo(error(f"Reindex failed: {e}"), err=True)
+        if verbose:
+            import traceback
+            traceback.print_exc()
+        sys.exit(1)
+
+
+@cli.command()
+@click.option('--db', type=click.Path(), default=None,
+              help='Database path (default: ./.velocirag/)')
+@click.option('--tags', '-t', multiple=True,
+              help='Filter by tags (can specify multiple)')
+@click.option('--status', '-s', default=None,
+              help='Filter by status (active, archived, etc.)')
+@click.option('--category', '-c', default=None,
+              help='Filter by category')
+@click.option('--project', '-p', default=None,
+              help='Filter by project')
+@click.option('--stale', type=int, default=None,
+              help='Find documents not accessed in N days')
+@click.option('--recent', type=int, default=None,
+              help='Find documents created in last N days')
+@click.option('--limit', '-l', default=20, type=int,
+              help='Maximum results to return (default: 20)')
+@click.option('--format', 'output_format', default='text',
+              type=click.Choice(['text', 'json', 'compact']),
+              help='Output format (default: text)')
+@click.option('--stats', is_flag=True,
+              help='Show metadata statistics instead of query results')
+@click.pass_context
+def query(ctx, db: Optional[str], tags: tuple, status: str, category: str, 
+         project: str, stale: Optional[int], recent: Optional[int], 
+         limit: int, output_format: str, stats: bool):
+    """
+    Query documents using metadata filters.
+    
+    Structured queries based on tags, categories, status, and other metadata.
+    Requires metadata to be extracted during indexing.
+    
+    Examples:
+        velocirag query --tags python --tags rust
+        velocirag query --status active --project myproject
+        velocirag query --stale 90
+        velocirag query --recent 7
+        velocirag query --stats
+    """
+    verbose = ctx.obj.get('verbose', False)
+    db_path = resolve_db_path(db)
+    
+    try:
+        # Check if metadata database exists
+        metadata_db = db_path / "metadata.db"
+        if not metadata_db.exists():
+            if output_format == 'json':
+                click.echo(json.dumps({
+                    'error': 'Metadata database not found',
+                    'message': 'Run indexing with metadata extraction first'
+                }))
+            else:
+                click.echo(error("Metadata database not found. Metadata extraction may not be configured."))
+            sys.exit(1)
+        
+        # Initialize metadata store
+        metadata_store = MetadataStore(str(metadata_db))
+        
+        # Handle stats request
+        if stats:
+            stats_data = metadata_store.stats()
+            
+            if output_format == 'json':
+                click.echo(json.dumps(stats_data, indent=2))
+            else:
+                click.echo(info("Metadata Statistics"))
+                click.echo()
+                click.echo(f"Total documents: {stats_data['total_documents']}")
+                click.echo(f"Total tags: {stats_data['total_tags']}")
+                click.echo(f"Total cross-references: {stats_data['total_cross_refs']}")
+                click.echo(f"Total usage events: {stats_data['total_usage_events']}")
+                click.echo(f"Database size: {stats_data['db_size_mb']} MB")
+                
+                if stats_data['categories']:
+                    click.echo()
+                    click.echo(info("Categories:"))
+                    for cat, count in stats_data['categories'].items():
+                        click.echo(f"  {cat}: {count}")
+                
+                if stats_data['top_tags']:
+                    click.echo()
+                    click.echo(info("Top tags:"))
+                    for tag, count in list(stats_data['top_tags'].items())[:10]:
+                        click.echo(f"  {tag}: {count}")
+                
+                if stats_data['projects']:
+                    click.echo()
+                    click.echo(info("Projects:"))
+                    for proj, count in stats_data['projects'].items():
+                        click.echo(f"  {proj}: {count}")
+            return
+        
+        # Build query filters
+        filters = {}
+        
+        if tags:
+            filters['tags'] = list(tags)
+        if status:
+            filters['status'] = status
+        if category:
+            filters['category'] = category
+        if project:
+            filters['project'] = project
+        if stale is not None:
+            filters['stale_days'] = stale
+        if recent is not None:
+            # Use get_recent method for recent documents
+            results = metadata_store.get_recent(days=recent)
+        elif stale is not None and not filters.get('tags'):
+            # Use get_stale method for stale documents  
+            results = metadata_store.get_stale(days=stale)
+        else:
+            # Regular query
+            filters['limit'] = limit
+            results = metadata_store.query(**filters)
+        
+        # Format output
+        if output_format == 'json':
+            click.echo(json.dumps(results, indent=2, default=str))
+        elif output_format == 'compact':
+            for doc in results:
+                click.echo(f"{doc['filename']}\t{doc['title']}")
+        else:
+            # Human-readable format
+            if not results:
+                click.echo(warning("No documents found matching the criteria"))
+                return
+            
+            click.echo(f"Found {len(results)} document{'s' if len(results) != 1 else ''}")
+            click.echo()
+            
+            for i, doc in enumerate(results, 1):
+                # Title and filename
+                click.echo(f"{i}. {info(doc['title'])}")
+                click.echo(f"   File: {doc['filename']}")
+                
+                # Metadata fields
+                if doc.get('category'):
+                    click.echo(f"   Category: {doc['category']}")
+                if doc.get('status'):
+                    status_color = success if doc['status'] == 'active' else warning
+                    click.echo(f"   Status: {status_color(doc['status'])}")
+                if doc.get('project'):
+                    click.echo(f"   Project: {doc['project']}")
+                
+                # Tags (from separate query if needed)
+                if 'tags' in doc and doc['tags']:
+                    tags_str = ', '.join(f"#{tag}" for tag in doc['tags'])
+                    click.echo(f"   Tags: {tags_str}")
+                
+                # Dates
+                if doc.get('created_date'):
+                    click.echo(f"   Created: {doc['created_date']}")
+                if doc.get('updated_at'):
+                    click.echo(f"   Updated: {doc['updated_at']}")
+                
+                # Usage info if available
+                if 'usage_stats' in doc:
+                    usage = doc['usage_stats']
+                    if usage['total_usage'] > 0:
+                        click.echo(f"   Usage: {usage['search_hits']} searches, {usage['reads']} reads")
+                
+                if i < len(results):
+                    click.echo()
+        
+    except Exception as e:
+        if output_format == 'json':
+            click.echo(json.dumps({'error': str(e)}))
+        else:
+            click.echo(error(f"Query failed: {e}"), err=True)
         if verbose:
             import traceback
             traceback.print_exc()

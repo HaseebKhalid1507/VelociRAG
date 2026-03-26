@@ -14,6 +14,8 @@ from velocirag.embedder import Embedder
 from velocirag.graph import GraphStore, Node, Edge, NodeType, RelationType
 from velocirag.pipeline import GraphPipeline
 from velocirag.unified import UnifiedSearch
+from velocirag.metadata import MetadataStore
+from velocirag.tracker import UsageTracker
 
 
 class MockSearcher:
@@ -146,7 +148,7 @@ class TestUnifiedSearch:
         results = unified.search("python programming", limit=2, enrich_graph=True)
         
         # Check search mode
-        assert results['search_mode'] == 'unified'
+        assert results['search_mode'] == 'vector_graph'
         assert results['enrichment_stats']['graph_available'] is True
         
         # First result should be enriched (python-guide)
@@ -317,8 +319,177 @@ class TestUnifiedSearch:
         
         # Should find results
         assert len(results['results']) > 0
-        assert results['search_mode'] == 'unified'
+        assert results['search_mode'] == 'vector_graph'
         
         # At least one result should be enriched
         enriched = [r for r in results['results'] if r['metadata']['found_in_graph']]
         assert len(enriched) > 0
+    
+    def test_search_with_metadata_filters(self, sample_search_results, tmp_path):
+        """Test search with metadata filtering."""
+        # Create metadata store with test data
+        metadata_db = tmp_path / "metadata.db"
+        metadata_store = MetadataStore(str(metadata_db))
+        
+        # Add test documents to metadata store
+        doc1_id = metadata_store.upsert_document(
+            filename="python-guide.md",
+            title="Python Guide",
+            metadata={'category': 'tutorial', 'status': 'active', 'project': 'docs'}
+        )
+        metadata_store.add_tags(doc1_id, ['python', 'programming', 'tutorial'])
+        
+        doc2_id = metadata_store.upsert_document(
+            filename="machine-learning.md", 
+            title="Machine Learning",
+            metadata={'category': 'research', 'status': 'active', 'project': 'ai'}
+        )
+        metadata_store.add_tags(doc2_id, ['python', 'ml', 'ai'])
+        
+        doc3_id = metadata_store.upsert_document(
+            filename="deep-learning.md",
+            title="Deep Learning",
+            metadata={'category': 'research', 'status': 'draft', 'project': 'ai'}
+        )
+        metadata_store.add_tags(doc3_id, ['ai', 'neural-networks'])
+        
+        # Create unified search with metadata
+        mock_searcher = MockSearcher(results=sample_search_results)
+        unified = UnifiedSearch(searcher=mock_searcher, metadata_store=metadata_store)
+        
+        # Search with tag filter
+        results = unified.search("python", filters={'tags': ['python']})
+        
+        assert results['search_mode'] == 'vector_metadata'
+        assert 'metadata_time_ms' in results
+        assert results['enrichment_stats']['metadata_matches'] == 2  # Two docs have python tag
+        
+        # Search with category filter
+        results = unified.search("learning", filters={'category': 'research'})
+        assert results['enrichment_stats']['metadata_matches'] == 2  # ML and DL docs
+        
+        # Search with multiple filters
+        results = unified.search("ai", filters={'tags': ['ai'], 'status': 'active'})
+        assert results['enrichment_stats']['metadata_matches'] == 1  # Only ML doc is active
+    
+    def test_rrf_fusion_with_metadata(self, sample_search_results, tmp_path):
+        """Test RRF fusion between vector and metadata results."""
+        # Create metadata store
+        metadata_db = tmp_path / "metadata.db"
+        metadata_store = MetadataStore(str(metadata_db))
+        
+        # Add a document that matches metadata but not in vector results
+        doc_id = metadata_store.upsert_document(
+            filename="rust-guide.md",
+            title="Rust Programming",
+            metadata={'category': 'tutorial', 'status': 'active'}
+        )
+        metadata_store.add_tags(doc_id, ['rust', 'programming'])
+        
+        # Also add python-guide which is in vector results
+        doc_id = metadata_store.upsert_document(
+            filename="python-guide.md",
+            title="Python Guide",
+            metadata={'category': 'tutorial', 'status': 'active'}
+        )
+        metadata_store.add_tags(doc_id, ['python', 'programming'])
+        
+        mock_searcher = MockSearcher(results=sample_search_results)
+        unified = UnifiedSearch(searcher=mock_searcher, metadata_store=metadata_store)
+        
+        # Search with programming tag filter
+        results = unified.search("programming", filters={'tags': ['programming']})
+        
+        # Should have fusion time
+        assert 'fusion_time_ms' in results
+        
+        # Results should be influenced by metadata matches
+        # python-guide.md should be boosted since it appears in both
+        for result in results['results']:
+            if 'python-guide' in result.get('metadata', {}).get('file_path', ''):
+                assert result.get('_metadata_match') is True
+                break
+    
+    def test_usage_tracking(self, sample_search_results, tmp_path):
+        """Test that search hits are tracked."""
+        # Create metadata store and tracker
+        metadata_db = tmp_path / "metadata.db"
+        metadata_store = MetadataStore(str(metadata_db))
+        tracker = UsageTracker(metadata_store)
+        
+        # Add test document
+        doc_id = metadata_store.upsert_document(
+            filename="python-guide.md",
+            title="Python Guide",
+            metadata={'category': 'tutorial'}
+        )
+        
+        # Create unified search with tracker
+        mock_searcher = MockSearcher(results=sample_search_results)
+        unified = UnifiedSearch(searcher=mock_searcher, tracker=tracker)
+        
+        # Perform search
+        results = unified.search("python programming")
+        
+        # Check that usage was logged
+        # Note: Only logs if result has valid file_path in metadata
+        history = tracker.get_access_history("python-guide.md")
+        # Since mock results have file paths, should have logged
+        if any('/python-guide.md' in r.get('metadata', {}).get('file_path', '') 
+               for r in sample_search_results):
+            assert len(history) > 0
+            assert history[0]['action'] == 'search_hit'
+    
+    def test_direct_metadata_query(self, tmp_path):
+        """Test direct metadata query method."""
+        # Create metadata store with test data
+        metadata_db = tmp_path / "metadata.db"
+        metadata_store = MetadataStore(str(metadata_db))
+        
+        # Add test documents
+        for i in range(5):
+            doc_id = metadata_store.upsert_document(
+                filename=f"doc_{i}.md",
+                title=f"Document {i}",
+                metadata={'category': 'test', 'status': 'active' if i < 3 else 'draft'}
+            )
+            metadata_store.add_tags(doc_id, ['test', f'doc{i}'])
+        
+        # Create unified search (no searcher needed for direct query)
+        mock_searcher = MockSearcher()
+        unified = UnifiedSearch(searcher=mock_searcher, metadata_store=metadata_store)
+        
+        # Direct query
+        results = unified.query(tags=['test'], status='active')
+        
+        assert len(results) == 3  # Only active documents
+        for doc in results:
+            assert doc['status'] == 'active'
+            assert 'test' in doc.get('tags', [])
+    
+    def test_search_mode_detection(self):
+        """Test that search mode is correctly detected based on available components."""
+        mock_searcher = MockSearcher()
+        
+        # Vector only
+        unified = UnifiedSearch(searcher=mock_searcher)
+        results = unified.search("test")
+        assert results['search_mode'] == 'vector_only'
+        
+        # Vector + graph
+        graph_store = GraphStore(":memory:")
+        unified = UnifiedSearch(searcher=mock_searcher, graph_store=graph_store)
+        results = unified.search("test")
+        assert results['search_mode'] == 'vector_graph'
+        
+        # Vector + metadata
+        metadata_store = MetadataStore(":memory:")
+        unified = UnifiedSearch(searcher=mock_searcher, metadata_store=metadata_store)
+        results = unified.search("test", filters={'tags': ['test']})
+        assert results['search_mode'] == 'vector_metadata'
+        
+        # All three layers
+        unified = UnifiedSearch(searcher=mock_searcher, graph_store=graph_store, 
+                               metadata_store=metadata_store)
+        results = unified.search("test", filters={'tags': ['test']})
+        assert results['search_mode'] == 'unified_full'

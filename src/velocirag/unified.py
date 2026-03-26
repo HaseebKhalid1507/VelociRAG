@@ -13,6 +13,9 @@ from typing import Any, Dict, List, Optional
 
 from .searcher import Searcher
 from .graph import GraphStore, GraphQuerier
+from .metadata import MetadataStore
+from .tracker import UsageTracker
+from .rrf import reciprocal_rank_fusion
 
 logger = logging.getLogger("velocirag.unified")
 
@@ -30,13 +33,16 @@ class UnifiedSearch:
     with graph context for richer, more meaningful search results.
     """
     
-    def __init__(self, searcher: Searcher, graph_store: Optional[GraphStore] = None):
+    def __init__(self, searcher: Searcher, graph_store: Optional[GraphStore] = None,
+                 metadata_store: Optional[MetadataStore] = None, tracker: Optional[UsageTracker] = None):
         """
         Initialize unified search orchestrator.
         
         Args:
             searcher: Vector searcher (required)
             graph_store: Knowledge graph (optional — degrades gracefully without it)
+            metadata_store: Metadata store for structured queries (optional)
+            tracker: Usage tracker for logging search hits (optional)
         """
         if not searcher:
             raise ValueError("Searcher is required")
@@ -44,37 +50,69 @@ class UnifiedSearch:
         self.searcher = searcher
         self.graph_store = graph_store
         self.graph_querier = GraphQuerier(graph_store) if graph_store else None
+        self.metadata_store = metadata_store
+        self.tracker = tracker
         
-        logger.info(f"UnifiedSearch initialized: vector={True}, graph={bool(graph_store)}")
+        logger.info(f"UnifiedSearch initialized: vector={True}, graph={bool(graph_store)}, "
+                   f"metadata={bool(metadata_store)}, tracker={bool(tracker)}")
     
     def search(self, query: str, limit: int = 5, threshold: float = 0.3, 
-               enrich_graph: bool = True) -> Dict[str, Any]:
+               enrich_graph: bool = True, filters: Optional[Dict] = None) -> Dict[str, Any]:
         """
-        Unified search: vector search + graph enrichment.
+        Unified search: vector search + metadata filtering + graph enrichment.
         
         Pipeline:
-        1. Run vector search (searcher.search)
-        2. For each result, find graph connections (if graph_store provided)
-        3. Add graph metadata to results (connected nodes, related notes)
-        4. Return enriched results
+        1. If filters provided, query MetadataStore for matching filenames
+        2. Run vector search (searcher.search)
+        3. If filters, apply RRF fusion to boost filtered results
+        4. For each result, find graph connections (if graph_store provided)
+        5. Add graph metadata to results (connected nodes, related notes)
+        6. Log search hits via tracker (if provided)
+        7. Return enriched results
         
         Args:
             query: Search query string
             limit: Maximum results to return
             threshold: Minimum similarity threshold
             enrich_graph: Enable graph enrichment (requires graph_store)
+            filters: Optional metadata filters (tags, status, category, etc.)
             
         Returns:
             Dictionary with enriched search results and metadata
         """
         start_time = time.time()
         
-        # Step 1: Execute vector search
+        # Step 1: Query metadata store if filters provided
+        metadata_results = []
+        metadata_filenames = set()
+        metadata_time_ms = 0
+        
+        if self.metadata_store and filters:
+            try:
+                metadata_start = time.time()
+                metadata_docs = self.metadata_store.query(**filters, limit=limit * 3)
+                metadata_time_ms = (time.time() - metadata_start) * 1000
+                
+                # Extract filenames for filtering/boosting
+                for doc in metadata_docs:
+                    metadata_filenames.add(doc.get('filename', ''))
+                    metadata_results.append({
+                        'filename': doc.get('filename', ''),
+                        'title': doc.get('title', ''),
+                        'score': 1.0  # Metadata matches get full score
+                    })
+                    
+                logger.info(f"Metadata query found {len(metadata_docs)} matching documents")
+            except Exception as e:
+                logger.warning(f"Metadata query failed: {e}")
+                # Continue without metadata filtering
+        
+        # Step 2: Execute vector search
         try:
             vector_start = time.time()
             vector_result = self.searcher.search(
                 query=query,
-                limit=limit * 2,  # Get more for enrichment filtering
+                limit=limit * 2 if filters else limit * 2,  # Get more for fusion/enrichment
                 threshold=threshold,
                 include_stats=True
             )
@@ -85,15 +123,98 @@ class UnifiedSearch:
         
         vector_results = vector_result.get('results', [])
         
+        # Step 3: Apply RRF fusion if metadata filtering was used
+        fusion_time_ms = 0
+        if metadata_results and filters:
+            try:
+                fusion_start = time.time()
+                
+                # Convert vector results to RRF format
+                vector_rrf_results = []
+                for i, result in enumerate(vector_results):
+                    # Try to extract filename from metadata
+                    file_path = result.get('metadata', {}).get('file_path', '')
+                    filename = Path(file_path).name if file_path else result.get('doc_id', '')
+                    
+                    vector_rrf_results.append({
+                        'doc_id': result.get('doc_id', f'vec_{i}'),
+                        'score': result.get('similarity', result.get('score', 0)),
+                        'metadata': result.get('metadata', {}),
+                        'content': result.get('content', ''),
+                        '_source': 'vector',
+                        '_filename': filename
+                    })
+                
+                # Convert metadata results to RRF format
+                metadata_rrf_results = []
+                for i, result in enumerate(metadata_results):
+                    metadata_rrf_results.append({
+                        'doc_id': result.get('filename', f'meta_{i}'),
+                        'score': result.get('score', 1.0),
+                        'metadata': {'filename': result.get('filename')},
+                        'content': '',
+                        '_source': 'metadata',
+                        '_filename': result.get('filename', '')
+                    })
+                
+                # Apply RRF fusion
+                fused_results_list = reciprocal_rank_fusion(
+                    [vector_rrf_results, metadata_rrf_results],
+                    k=60
+                )
+                
+                # Map fused results back to original vector results
+                fused_results = []
+                seen_docs = set()
+                
+                for fused_result in fused_results_list[:limit * 2]:
+                    # Extract document identification
+                    fused_filename = fused_result.get('_filename', '')
+                    fused_doc_id = fused_result.get('doc_id', '')
+                    rrf_score = fused_result.get('metadata', {}).get('rrf_score', 0.0)
+                    
+                    # Find the original vector result
+                    for result in vector_results:
+                        result_doc_id = result.get('doc_id', '')
+                        result_filename = Path(result.get('metadata', {}).get('file_path', '')).name
+                        
+                        match_key = result_filename or result_doc_id
+                        if (match_key == fused_filename or match_key == fused_doc_id) and match_key not in seen_docs:
+                            # Boost score if in metadata results
+                            if result_filename in metadata_filenames:
+                                result['_metadata_match'] = True
+                            result['_rrf_score'] = rrf_score
+                            fused_results.append(result)
+                            seen_docs.add(match_key)
+                            break
+                
+                vector_results = fused_results
+                fusion_time_ms = (time.time() - fusion_start) * 1000
+                
+            except Exception as e:
+                logger.warning(f"RRF fusion failed: {e}")
+                # Continue with original vector results
+        
         # Determine search mode
         graph_available = bool(self.graph_store and enrich_graph)
-        search_mode = 'unified' if graph_available else 'vector_only'
+        metadata_available = bool(self.metadata_store and filters)
+        
+        if metadata_available and graph_available:
+            search_mode = 'unified_full'  # All three layers
+        elif metadata_available:
+            search_mode = 'vector_metadata'  # Vector + metadata
+        elif graph_available:
+            search_mode = 'vector_graph'  # Vector + graph
+        else:
+            search_mode = 'vector_only'  # Vector only
         
         # Initialize enrichment stats
         enrichment_stats = {
             'vector_results': len(vector_results),
             'graph_enriched': 0,
-            'graph_available': graph_available
+            'graph_available': graph_available,
+            'metadata_available': metadata_available,
+            'metadata_matches': len(metadata_filenames) if filters else 0
         }
         
         # Step 2: Enrich results with graph connections
@@ -128,6 +249,17 @@ class UnifiedSearch:
             
             enriched_results.append(enriched_result)
         
+        # Log search hits via tracker if available
+        if self.tracker:
+            try:
+                for result in enriched_results:
+                    file_path = result.get('metadata', {}).get('file_path')
+                    if file_path:
+                        filename = Path(file_path).name
+                        self.tracker.log_search_hit(filename, query)
+            except Exception as e:
+                logger.warning(f"Failed to log search hits: {e}")
+        
         # Calculate timing
         total_time = time.time() - start_time
         
@@ -141,11 +273,15 @@ class UnifiedSearch:
             'enrichment_stats': enrichment_stats
         }
         
-        # Add vector-specific metadata
+        # Add timing metadata
         if 'search_time_ms' in vector_result:
             response['vector_time_ms'] = vector_result['search_time_ms']
         if 'variants_used' in vector_result:
             response['variants_used'] = vector_result['variants_used']
+        if metadata_time_ms > 0:
+            response['metadata_time_ms'] = round(metadata_time_ms, 2)
+        if fusion_time_ms > 0:
+            response['fusion_time_ms'] = round(fusion_time_ms, 2)
         
         # Log any graph errors (but don't fail the search)
         if graph_errors:
@@ -290,3 +426,65 @@ class UnifiedSearch:
                 stats['graph_stats'] = {'error': str(e)}
         
         return stats
+    
+    def query(self, **filters) -> List[Dict]:
+        """
+        Direct metadata query without vector search.
+        
+        Convenience method that goes straight to MetadataStore for structured queries.
+        
+        Args:
+            **filters: Metadata filters (tags, status, category, project, etc.)
+            
+        Returns:
+            List of matching documents from metadata store with tags included
+        """
+        if not self.metadata_store:
+            logger.warning("No metadata store configured for direct queries")
+            return []
+        
+        try:
+            results = self.metadata_store.query(**filters)
+            
+            # Enrich results with tags for each document
+            enriched_results = []
+            for doc in results:
+                doc_copy = doc.copy()
+                
+                # Add tags to the document
+                doc_id = doc.get('id')
+                if doc_id:
+                    try:
+                        # Get tags for this document
+                        import sqlite3
+                        with sqlite3.connect(self.metadata_store.db_path) as conn:
+                            tag_rows = conn.execute('''
+                                SELECT t.name FROM tags t
+                                JOIN document_tags dt ON t.id = dt.tag_id
+                                WHERE dt.doc_id = ?
+                                ORDER BY t.name
+                            ''', (doc_id,)).fetchall()
+                            doc_copy['tags'] = [row[0] for row in tag_rows]
+                    except Exception as e:
+                        logger.warning(f"Failed to get tags for doc {doc_id}: {e}")
+                        doc_copy['tags'] = []
+                else:
+                    doc_copy['tags'] = []
+                
+                enriched_results.append(doc_copy)
+            
+            # Log usage if tracker available
+            if self.tracker:
+                for doc in enriched_results[:10]:  # Limit logging to first 10
+                    try:
+                        filename = doc.get('filename')
+                        if filename:
+                            self.tracker.log_search_hit(filename, f"metadata_query: {filters}")
+                    except Exception as e:
+                        logger.warning(f"Failed to log metadata query hit: {e}")
+            
+            return enriched_results
+            
+        except Exception as e:
+            logger.error(f"Metadata query failed: {e}")
+            return []
