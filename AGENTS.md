@@ -8,8 +8,8 @@ VelociRAG is **lightning-fast RAG for AI agents**. Pure retrieval engine powered
 
 - **Language:** Python 3.10+
 - **Backend:** ONNX Runtime (no PyTorch)
-- **Source:** `src/velocirag/` (19 modules, ~10.8K lines)
-- **Tests:** `tests/` (19 test files)
+- **Source:** `src/velocirag/` (18 modules, ~10K lines)
+- **Tests:** `tests/` (18 test files)
 - **CLI:** `velocirag` (click-based)
 - **License:** MIT
 
@@ -37,23 +37,22 @@ markdown files → chunk → embed (ONNX) → store (SQLite + FAISS)
 | Module | Lines | Purpose |
 |--------|-------|---------|
 | `cli.py` | 1524 | Click CLI — index, search, serve, stop, status, mcp, health, query, reindex |
-| `store.py` | 1128 | Vector storage — SQLite + FAISS + FTS5. Batched rebuild for large corpora. |
 | `analyzers.py` | 1063 | 7 graph analyzers + FAISS semantic (not O(n²)) + sampled centrality. GLiNER NER optional. |
 | `graph.py` | 915 | Knowledge graph — Node/Edge models, GraphStore (SQLite), GraphQuerier |
-| `unified.py` | 839 | 4-layer fusion search orchestrator — vector + keyword + metadata + graph → RRF |
-| `searcher.py` | 830 | High-level search — query variants, RRF fusion, caching |
+| `unified.py` | 893 | 4-layer fusion search orchestrator — vector + keyword + metadata + graph → RRF. Filename cache. |
+| `store.py` | 870 | Vector storage — SQLite + FAISS + FTS5. Batched rebuild for large corpora. |
 | `metadata.py` | 695 | Metadata store — frontmatter, tags, cross-refs, usage tracking |
+| `searcher.py` | 681 | High-level search — query variants, batch FAISS, RRF fusion, caching |
 | `pipeline.py` | 638 | 10-stage graph build pipeline. Memory-safe: frees content + model after Stage 7. |
 | `embedder.py` | 527 | ONNX Runtime embeddings (all-MiniLM-L6-v2, 384d). 3ms warm, 184ms cold. |
-| `abstracts.py` | 513 | L0/L1 abstract generation for progressive search |
-| `mcp_server.py` | 497 | FastMCP server — 5 tools (search, index, add_document, health, list_sources) |
-| `daemon.py` | 433 | Unix socket search daemon — warm engine, auto-detected by CLI |
+| `mcp_server.py` | 498 | FastMCP server — 5 tools (search, index, add_document, health, list_sources) |
+| `daemon.py` | 437 | Unix socket search daemon — warm engine, auto-detected by CLI |
 | `tracker.py` | 308 | Usage tracking — search hits, reads, access patterns |
 | `variants.py` | 217 | Query variant generation + acronym registry + question rewrite |
-| `reranker.py` | 178 | Cross-encoder reranking (TinyBERT). Optional: `pip install velocirag[reranker]` |
+| `reranker.py` | 186 | Cross-encoder reranking (TinyBERT). Optional: `pip install velocirag[reranker]` |
 | `frontmatter.py` | 172 | YAML frontmatter parser, tag extraction, wiki-link extraction |
 | `chunker.py` | 158 | Markdown chunking by headers with parent context preservation |
-| `rrf.py` | 143 | Reciprocal Rank Fusion implementation |
+| `rrf.py` | 145 | Reciprocal Rank Fusion implementation |
 
 ## Key Classes
 
@@ -195,7 +194,7 @@ pytest tests/ -k "not incremental"     # Skip known flaky mtime tests
 
 ```
 velocirag/
-├── src/velocirag/       # Source modules (19 files, ~10.8K lines)
+├── src/velocirag/       # Source modules (18 files, ~10K lines)
 │   ├── __init__.py      # Public API exports
 │   ├── store.py         # VectorStore (SQLite + FAISS + FTS5)
 │   ├── searcher.py      # Search orchestration
@@ -213,9 +212,8 @@ velocirag/
 │   ├── variants.py      # Query variant generation
 │   ├── frontmatter.py   # YAML frontmatter parsing
 │   ├── tracker.py       # Usage tracking
-│   ├── abstracts.py     # L0/L1 abstract generation
 │   └── cli.py           # Click CLI
-├── tests/               # 19 test files, pytest
+├── tests/               # 18 test files, pytest
 ├── examples/            # basic_search.py, unified_search.py
 ├── pyproject.toml       # Package config
 ├── README.md            # User-facing documentation
