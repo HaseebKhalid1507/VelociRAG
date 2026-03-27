@@ -92,13 +92,15 @@ class GraphPipeline:
         self.stats = {}
         self.file_to_doc_id: Dict[str, int] = {}  # Track filename to doc_id mapping
     
-    def build(self, source_path: str, force_rebuild: bool = False) -> Dict[str, Any]:
+    def build(self, source_path: str, force_rebuild: bool = False, skip_semantic: bool = False) -> Dict[str, Any]:
         """
         Execute the complete graph build pipeline.
         
         Args:
             source_path: Path to markdown directory
             force_rebuild: Clear existing graph before building
+            skip_semantic: Skip Stage 7 (semantic similarity). Saves ~2GB RAM.
+                          Explicit links, entities, temporal, topics still built.
             
         Returns:
             Build statistics and results
@@ -155,9 +157,11 @@ class GraphPipeline:
             # Stage 6: Topic analysis
             self._stage_6_topic_analysis()
             
-            # Stage 7: Semantic analysis (if embedder available)
-            if self.semantic_analyzer:
+            # Stage 7: Semantic analysis (if embedder available and not skipped)
+            if self.semantic_analyzer and not skip_semantic:
                 self._stage_7_semantic_analysis()
+            elif skip_semantic:
+                logger.info("Stage 7: Skipped (--light-graph / skip_semantic=True)")
 
             # Free memory after semantic analysis — content and embedder no longer needed
             content_freed = 0
@@ -240,7 +244,11 @@ class GraphPipeline:
         logger.info(f"Stage 1 complete: {notes_created} notes created in {duration:.1f}s")
     
     def _stage_2_metadata_extraction(self) -> None:
-        """Stage 2: Extract metadata from markdown files."""
+        """Stage 2: Extract metadata from markdown files.
+        
+        Uses a single transaction for all upserts instead of per-document
+        transactions. 680 files: 4+ min → ~2s.
+        """
         logger.info("Stage 2: Extracting metadata from markdown files...")
         start_time = datetime.now()
         
@@ -249,7 +257,12 @@ class GraphPipeline:
         cross_refs_extracted = 0
         errors = []
         
-        # Process each note node
+        import sqlite3
+        conn = sqlite3.connect(self.metadata_store.db_path)
+        conn.execute('PRAGMA foreign_keys = ON')
+        conn.execute('BEGIN')
+        
+        # Process each note node in a single transaction
         for node in self.nodes:
             if node.type != NodeType.NOTE:
                 continue
@@ -291,30 +304,64 @@ class GraphPipeline:
                     if key not in metadata and key not in ['tags']:
                         metadata[key] = value
                 
-                # Upsert document into metadata store
-                doc_id = self.metadata_store.upsert_document(
-                    filename=node.metadata.get('relative_path', node.metadata.get('filename', node.id)),
-                    title=node.title,
-                    metadata=metadata
-                )
+                # Upsert document directly via shared connection (not per-doc transaction)
+                filename = node.metadata.get('relative_path', node.metadata.get('filename', node.id))
+                category = metadata.get('category')
+                status = metadata.get('status', 'active')
+                project = metadata.get('project')
+                created_date = metadata.get('created_date')
+                updated_date = metadata.get('updated_date')
+                meta_fields = {k: v for k, v in metadata.items()
+                              if k not in ('category', 'status', 'project', 'created_date', 'updated_date')}
+                meta_json = json.dumps(meta_fields) if meta_fields else None
                 
-                # Track mapping for later use
+                existing = conn.execute(
+                    'SELECT id FROM documents WHERE filename = ?', (filename,)
+                ).fetchone()
+                
+                if existing:
+                    conn.execute('''
+                        UPDATE documents SET title=?, category=?, status=?, project=?,
+                            created_date=?, updated_date=?, meta=?, updated_at=CURRENT_TIMESTAMP
+                        WHERE filename=?
+                    ''', (node.title, category, status, project, created_date, updated_date, meta_json, filename))
+                    doc_id = existing[0]
+                else:
+                    cursor = conn.execute('''
+                        INSERT INTO documents (filename, title, category, status, project,
+                            created_date, updated_date, meta) VALUES (?,?,?,?,?,?,?,?)
+                    ''', (filename, node.title, category, status, project, created_date, updated_date, meta_json))
+                    doc_id = cursor.lastrowid
+                
                 self.file_to_doc_id[file_path] = doc_id
                 metadata_added += 1
                 
-                # Add tags
+                # Add tags via shared connection
                 if all_tags:
-                    self.metadata_store.add_tags(doc_id, all_tags)
+                    for tag in all_tags:
+                        tag_row = conn.execute('SELECT id FROM tags WHERE name = ?', (tag,)).fetchone()
+                        if tag_row:
+                            tag_id = tag_row[0]
+                        else:
+                            tag_id = conn.execute('INSERT INTO tags (name) VALUES (?)', (tag,)).lastrowid
+                        conn.execute('INSERT OR IGNORE INTO document_tags (document_id, tag_id) VALUES (?,?)', (doc_id, tag_id))
                     tags_extracted += len(all_tags)
                 
-                # Add cross-references
+                # Add cross-references via shared connection
                 for wiki_link in wiki_links:
-                    self.metadata_store.add_cross_ref(doc_id, wiki_link, ref_type='wiki_link')
+                    conn.execute('''
+                        INSERT OR IGNORE INTO cross_refs (source_doc_id, target_ref, ref_type)
+                        VALUES (?,?,?)
+                    ''', (doc_id, wiki_link, 'wiki_link'))
                     cross_refs_extracted += 1
                     
             except Exception as e:
                 logger.warning(f"Failed to extract metadata from {node.id}: {e}")
                 errors.append(str(e))
+        
+        # Commit the single transaction for all documents
+        conn.commit()
+        conn.close()
         
         duration = (datetime.now() - start_time).total_seconds()
         self.stats['stages']['metadata'] = {
