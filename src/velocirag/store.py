@@ -471,24 +471,29 @@ class VectorStore:
             if not query or not query.strip():
                 return []
             
-            # Escape for FTS5: strip FTS5 operators, keep Unicode, wrap in quotes
-            # FTS5 special chars: * ^ ( ) - \ : { } [ ] AND OR NOT NEAR
+            # Escape for FTS5: strip operators, split underscores, use OR for recall
+            # FTS5 porter tokenizer splits on underscores, so we must too.
+            # Use OR between terms for better recall (AND is too strict for multi-word).
             FTS5_STRIP = set('"\'\\(){}[]*^:~@#$%&|<>!')
-            words = query.strip().split()
+            raw_words = query.strip().split()
             safe_tokens = []
             
-            for word in words:
-                # Strip only FTS5 special characters — keep Unicode, digits, letters
+            for word in raw_words:
+                # Strip FTS5 special characters
                 cleaned = ''.join(c for c in word if c not in FTS5_STRIP)
-                # Also strip leading/trailing hyphens (FTS5 NOT operator)
                 cleaned = cleaned.strip('-')
-                if cleaned and cleaned.strip():
-                    safe_tokens.append(f'"{cleaned.strip()}"')
+                if not cleaned or not cleaned.strip():
+                    continue
+                # Split on underscores — FTS5 porter tokenizer does this internally
+                sub_words = [w for w in cleaned.split('_') if w.strip()]
+                for sw in sub_words:
+                    safe_tokens.append(f'"{sw.strip()}"')
             
             if not safe_tokens:
                 return []
             
-            safe_query = ' '.join(safe_tokens)
+            # Use OR for better recall — AND drops results when any single term is missing
+            safe_query = ' OR '.join(safe_tokens)
             
             try:
                 rows = conn.execute('''
