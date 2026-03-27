@@ -142,7 +142,19 @@ class Searcher:
         """
         self.store = store
         self.embedder = embedder
-        self.reranker = reranker
+        
+        # Auto-create reranker if not provided
+        if reranker is None:
+            try:
+                from .reranker import Reranker
+                _reranker = Reranker()
+                self.reranker = _reranker.rerank
+                logger.info("Reranker auto-initialized (cross-encoder)")
+            except Exception as e:
+                logger.info(f"Reranker not available: {e}")
+                self.reranker = None
+        else:
+            self.reranker = reranker
         
         # Validate RRF k parameter
         if not isinstance(rrf_k, int):
