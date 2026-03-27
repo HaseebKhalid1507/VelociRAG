@@ -93,7 +93,7 @@ Query → expand (acronyms, variants)
 | Exact match ("ERR_CONNECTION_REFUSED") | — | ✅ | — | — |
 | Connected concepts | — | — | ✅ | — |
 | Filtered ("#python status:active") | — | — | — | ✅ |
-| Combined ("React state management") | ✅ | ✅ | — | ✅ |
+| Combined ("React state management") | ✅ | ✅ | ✅ | ✅ |
 
 ## ✨ Features
 
