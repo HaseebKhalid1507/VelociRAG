@@ -253,4 +253,4 @@ Real benchmarks from production deployment (3,416 documents, ONNX Runtime, v0.5.
 
 ---
 
-_Built because every agent deserves a search engine that doesn't need a GPU._
+_Built for agents who think fast and remember faster._
