@@ -37,7 +37,7 @@ markdown files → chunk → embed (ONNX) → store (SQLite + FAISS)
 | Module | Lines | Purpose |
 |--------|-------|---------|
 | `cli.py` | 1524 | Click CLI — index, search, serve, stop, status, mcp, health, query, reindex |
-| `analyzers.py` | 1063 | 7 graph analyzers + FAISS semantic (not O(n²)) + sampled centrality. GLiNER NER optional. |
+| `analyzers.py` | 1079 | 7 graph analyzers + FAISS semantic (not O(n²)) + sampled centrality + 128-token truncation. GLiNER NER optional. |
 | `graph.py` | 915 | Knowledge graph — Node/Edge models, GraphStore (SQLite), GraphQuerier |
 | `unified.py` | 893 | 4-layer fusion search orchestrator — vector + keyword + metadata + graph → RRF. Filename cache. |
 | `store.py` | 870 | Vector storage — SQLite + FAISS + FTS5. Batched rebuild for large corpora. |
@@ -184,7 +184,7 @@ pytest tests/ -k "not incremental"     # Skip known flaky mtime tests
 - **Embedding backend:** ONNX Runtime via `Embedder()`. Downloads `optimum/all-MiniLM-L6-v2` on first use to `~/.cache/velocirag/models/`. No PyTorch needed.
 - **SQLite connections:** Always use `self._connect()` context manager (properly closes). Never `with sqlite3.connect() as conn:` (leaks FDs in long-running processes).
 - **FTS5 queries:** Strip FTS5 operators, keep Unicode, wrap in quotes. Use try/except — MATCH can throw on syntax.
-- **Graph OOM safety:** SemanticAnalyzer uses FAISS top-K (not O(n²) pairwise). TemporalAnalyzer caps at 50K edges. CentralityAnalyzer samples 500 BFS sources. Pipeline frees content + embedder after Stage 7. VectorStore freed before graph build in CLI. `--light-graph` skips semantic entirely (~2GB savings). Stage 2 metadata batched in single transaction (0.3s vs 4+ min).
+- **Graph OOM safety:** SemanticAnalyzer uses FAISS top-K (not O(n²) pairwise), 128-token truncation (3.5x faster), skips docs <50 chars. TemporalAnalyzer caps at 50K edges. CentralityAnalyzer samples 500 BFS sources (parent-pointer BFS). Pipeline frees content + embedder after Stage 7. VectorStore freed before graph build in CLI. `--light-graph` skips semantic entirely (~2GB savings). Stage 2 metadata batched in single transaction (0.3s vs 4+ min).
 - **Reranker:** Optional dependency. Falls back to unranked results if sentence-transformers not installed.
 - **MCP server:** Thread-safe lazy init with double-checked locking. Logger warnings on component failures (no silent swallowing).
 - **Daemon:** Single worker thread owns SQLite/FAISS. Connection threads submit to queue. Length-prefixed JSON over Unix socket.
