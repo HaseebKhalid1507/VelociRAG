@@ -94,7 +94,8 @@ class GraphPipeline:
         self.file_to_doc_id: Dict[str, int] = {}  # Track filename to doc_id mapping
     
     def build(self, source_path: str, force_rebuild: bool = False, skip_semantic: bool = False, 
-              incremental: bool = True) -> Dict[str, Any]:
+              incremental: bool = True,
+              source_name: str = "") -> Dict[str, Any]:
         """
         Execute the complete graph build pipeline.
         
@@ -104,6 +105,7 @@ class GraphPipeline:
             skip_semantic: Skip Stage 7 (semantic similarity). Saves ~2GB RAM.
                           Explicit links, entities, temporal, topics still built.
             incremental: Enable incremental updates if provenance exists
+            source_name: Source identifier for multi-source graphs (e.g. 'mikoshi', 'notes')
             
         Returns:
             Build statistics and results
@@ -115,10 +117,10 @@ class GraphPipeline:
         # Check for incremental update if enabled
         if incremental and not force_rebuild and self.graph_store._provenance_exists():
             logger.info("Incremental mode: detecting changes...")
-            changed_files, deleted_files = self._detect_changes(source_path, source_name="")
+            changed_files, deleted_files = self._detect_changes(source_path, source_name=source_name)
             if changed_files or deleted_files:
                 logger.info(f"Incremental update: {len(changed_files)} changed, {len(deleted_files)} deleted")
-                return self.update_incremental(changed_files, deleted_files, source_name="")
+                return self.update_incremental(changed_files, deleted_files, source_name=source_name)
             else:
                 logger.info("No changes detected, skipping build")
                 return {'success': True, 'incremental': True, 'changes': False}
@@ -228,7 +230,7 @@ class GraphPipeline:
         })
         
         # Write file provenance for full build (enables future incremental updates)
-        self._write_file_provenance(source_path, "")
+        self._write_file_provenance(source_path, source_name)
         
         logger.info(f"Graph build completed in {duration:.1f}s: {len(self.nodes)} nodes, {len(self.edges)} edges")
         return self.stats
@@ -972,8 +974,9 @@ class GraphPipeline:
                 _embedder = embedder or Embedder()
 
                 # Reload all current nodes/edges for full-corpus lookups
-                all_nodes = self.graph_store.get_all_nodes()
-                existing_edges = self.graph_store.get_all_edges()
+                # Must use same conn — opening a new connection deadlocks SQLite
+                all_nodes = self._load_all_nodes(conn)
+                existing_edges = self._load_all_edges(conn)
                 changed_files_set = set(all_changed_files)
 
                 new_nodes: List[Node] = []
@@ -1115,6 +1118,37 @@ class GraphPipeline:
                    f"{stats['nodes_added']} nodes, {stats['edges_added']} edges")
         return stats
     
+    def _load_all_nodes(self, conn) -> List[Node]:
+        """Load all nodes using an existing connection (avoids deadlock inside transactions)."""
+        rows = conn.execute(
+            'SELECT id, type, title, content, metadata, created_at FROM nodes'
+        ).fetchall()
+        nodes = []
+        for id_val, type_val, title, content, metadata_json, created_at_iso in rows:
+            metadata = json.loads(metadata_json) if metadata_json else {}
+            created_at = datetime.fromisoformat(created_at_iso) if created_at_iso else None
+            nodes.append(Node(
+                id=id_val, type=NodeType(type_val), title=title,
+                content=content, metadata=metadata, created_at=created_at
+            ))
+        return nodes
+
+    def _load_all_edges(self, conn) -> List[Edge]:
+        """Load all edges using an existing connection (avoids deadlock inside transactions)."""
+        rows = conn.execute(
+            'SELECT id, source_id, target_id, type, weight, confidence, metadata, created_at FROM edges'
+        ).fetchall()
+        edges = []
+        for id_val, src, tgt, type_val, weight, conf, metadata_json, created_at_iso in rows:
+            metadata = json.loads(metadata_json) if metadata_json else {}
+            created_at = datetime.fromisoformat(created_at_iso) if created_at_iso else None
+            edges.append(Edge(
+                id=id_val, source_id=src, target_id=tgt,
+                type=RelationType(type_val), weight=weight, confidence=conf,
+                metadata=metadata, created_at=created_at
+            ))
+        return edges
+
     def _compute_file_hash(self, file_path: str) -> str:
         """Compute SHA256 hash of file contents."""
         try:
