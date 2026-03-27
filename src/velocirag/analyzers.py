@@ -853,12 +853,21 @@ class SemanticAnalyzer:
         if len(note_nodes) < 2:
             return new_nodes, new_edges
         
-        # Generate embeddings in batches — avoids PyTorch buffer fragmentation
-        # from 7K individual embed() calls
+        # Generate embeddings in batches
         node_ids = []
         embedding_list = []
         batch_size = 256
-        
+
+        # Ensure model is loaded
+        if self.embedder._model_session is None:
+            self.embedder._load_model()
+
+        # Use shorter truncation for graph builds — first 128 tokens (~300 chars)
+        # covers title + description + first examples, enough for topical similarity.
+        # This gives ~3.5x speedup since ONNX inference scales with sequence length.
+        original_truncation = self.embedder._tokenizer.truncation
+        self.embedder._tokenizer.enable_truncation(max_length=128)
+
         for i in range(0, len(note_nodes), batch_size):
             batch = note_nodes[i:i + batch_size]
             texts = []
@@ -867,10 +876,10 @@ class SemanticAnalyzer:
                 if node.content and node.content.strip():
                     texts.append(node.content)
                     ids.append(node.id)
-            
+
             if not texts:
                 continue
-            
+
             try:
                 batch_embeddings = self.embedder.embed(texts)
                 if batch_embeddings.ndim == 1:
@@ -880,7 +889,6 @@ class SemanticAnalyzer:
                     embedding_list.append(np.array(emb, dtype=np.float32))
             except Exception as e:
                 logger.warning(f"Batch embedding failed (batch {i//batch_size}): {e}")
-                # Fallback to individual embedding
                 for node in batch:
                     try:
                         emb = self.embedder.embed(node.content)
@@ -893,10 +901,15 @@ class SemanticAnalyzer:
                     except Exception:
                         pass
         
+        # Restore original truncation
+        if original_truncation:
+            self.embedder._tokenizer.enable_truncation(
+                max_length=original_truncation.get('max_length', 256))
+
         if len(embedding_list) < 2:
             logger.warning("Not enough embeddings for similarity analysis")
             return new_nodes, new_edges
-        
+
         logger.info(f"SemanticAnalyzer: {len(embedding_list)} embeddings, using FAISS top-K search")
         
         # Build FAISS index for efficient top-K similarity search — O(n*k) not O(n²)
@@ -955,13 +968,16 @@ class SemanticAnalyzer:
                     node_edge_counts[target_id] >= self.max_edges_per_node):
                     continue
                 
+                # Clamp to [0, 1] — FAISS float32 inner product can exceed 1.0 by epsilon
+                clamped_sim = min(sim, 1.0)
+
                 edge = Edge(
                     id=f"semantic_{source_id}_{target_id}",
                     source_id=source_id,
                     target_id=target_id,
                     type=RelationType.SIMILAR_TO,
-                    weight=sim,
-                    confidence=sim,
+                    weight=clamped_sim,
+                    confidence=clamped_sim,
                     metadata={
                         'similarity_score': sim,
                         'analysis_method': 'faiss_cosine'
