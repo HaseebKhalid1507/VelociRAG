@@ -8,10 +8,8 @@ Fixed version addressing performance issues:
 - Better error handling
 """
 
-import hashlib
 import json
 import logging
-import os
 import sqlite3
 import time
 from contextlib import contextmanager

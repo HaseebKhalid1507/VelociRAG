@@ -6,13 +6,11 @@ using explicit links, entity extraction, temporal analysis, topic clustering,
 semantic similarity, and centrality scoring.
 """
 
-import os
 import re
 import logging
 from collections import defaultdict, Counter, deque
-from datetime import datetime, timedelta
-from pathlib import Path
-from typing import Any, Dict, List, Optional, Set, Tuple
+from datetime import datetime
+from typing import Dict, List, Optional, Set, Tuple
 import hashlib
 
 # Conditional imports

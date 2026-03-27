@@ -8,7 +8,6 @@ Extracted from production Jawz vector search system.
 
 import re
 import hashlib
-from typing import Any
 import frontmatter
 
 # Chunking constants

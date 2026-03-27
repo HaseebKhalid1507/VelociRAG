@@ -13,7 +13,7 @@ import time
 import warnings
 import logging
 from pathlib import Path
-from typing import Optional, Dict, Any
+from typing import Optional
 
 # Suppress noisy model loading output
 os.environ.setdefault('TOKENIZERS_PARALLELISM', 'false')
@@ -27,7 +27,7 @@ logging.getLogger('sentence_transformers').setLevel(logging.ERROR)
 logging.getLogger('httpx').setLevel(logging.ERROR)
 logging.getLogger('velocirag.tracker').setLevel(logging.ERROR)
 
-import click
+import click  # noqa: E402
 
 # Import internal modules with graceful error handling
 try:
@@ -39,8 +39,8 @@ try:
     from .graph import GraphStore
     from .pipeline import GraphPipeline
     from .unified import UnifiedSearch
-except ImportError as e:
-    click.echo(f"Error: Missing dependencies. Please run 'pip install velocirag'", err=True)
+except ImportError:
+    click.echo("Error: Missing dependencies. Please run 'pip install velocirag'", err=True)
     sys.exit(1)
 
 
@@ -233,10 +233,11 @@ def index(ctx, path: str, db: Optional[str], source: str, force: bool, graph: bo
             embedder._model = None
             embedder._cache.clear()
             del embedder
-            import gc; gc.collect()
+            import gc
+            gc.collect()
 
             click.echo()
-            click.echo(f"Building knowledge graph...")
+            click.echo("Building knowledge graph...")
             try:
                 graph_db = db_path / "graph.db"
                 graph_store = GraphStore(str(graph_db))
@@ -282,7 +283,7 @@ def index(ctx, path: str, db: Optional[str], source: str, force: bool, graph: bo
         # Extract metadata without graph if requested
         elif metadata:
             click.echo()
-            click.echo(f"Extracting metadata...")
+            click.echo("Extracting metadata...")
             try:
                 metadata_db = db_path / "metadata.db"
                 metadata_store_obj = MetadataStore(str(metadata_db))
@@ -399,7 +400,7 @@ def search(ctx, query: str, db: Optional[str], limit: int,
                 
             click.echo(f"Query: \"{query}\"")
             layer_stats = result.get('layer_stats', {})
-            active_layers = [l for l, s in layer_stats.items() if s.get('candidates', 0) > 0]
+            active_layers = [layer for layer, s in layer_stats.items() if s.get('candidates', 0) > 0]
             layers_str = f" [{' + '.join(active_layers)}]" if active_layers else ""
             
             click.echo(info(f"Found {total_results} result{'s' if total_results != 1 else ''} in {search_time:.0f}ms [daemon]{layers_str}"))
@@ -562,7 +563,7 @@ def search(ctx, query: str, db: Optional[str], limit: int,
             
             # Show active layers
             layer_stats = results.get('layer_stats', {})
-            active_layers = [l for l, s in layer_stats.items() if s.get('candidates', 0) > 0]
+            active_layers = [layer for layer, s in layer_stats.items() if s.get('candidates', 0) > 0]
             layers_str = f" [{' + '.join(active_layers)}]" if active_layers else ""
             
             click.echo(info(f"Found {total_results} result{'s' if total_results != 1 else ''} in {search_time:.0f}ms{layers_str}"))
@@ -788,7 +789,6 @@ def health(ctx, db, output_format, daemon):
     import socket
     import struct
     
-    verbose = ctx.obj.get('verbose', False)
     db_path = resolve_db_path(db)
     
     def _query_daemon(socket_path, request):
@@ -1478,7 +1478,7 @@ def stop():
 
 
 @cli.command()
-def status():
+def daemon_status():
     """Check daemon status."""
     from .daemon import daemon_ping, daemon_health
     

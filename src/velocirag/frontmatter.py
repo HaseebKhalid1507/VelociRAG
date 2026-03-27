@@ -7,7 +7,7 @@ Handles edge cases gracefully with robust error handling.
 
 import re
 import logging
-from typing import Dict, List, Tuple, Any, Union
+from typing import Dict, List, Tuple
 
 try:
     import yaml
@@ -155,7 +155,7 @@ def _normalize_frontmatter_values(data: Dict) -> Dict:
             # datetime/date object
             try:
                 normalized[key] = value.isoformat()
-            except:
+            except Exception:
                 normalized[key] = str(value)
         elif isinstance(value, dict):
             # Recursive normalization for nested dicts

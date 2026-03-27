@@ -7,7 +7,7 @@ Provides analytics and insights into document usage and staleness.
 
 import logging
 from contextlib import contextmanager
-from typing import Dict, List, Optional
+from typing import Dict, List
 
 from .metadata import MetadataStore
 
@@ -141,7 +141,6 @@ class UsageTracker:
             List of document dictionaries that have never been accessed
         """
         try:
-            import sqlite3
             with self._connect() as conn:
                 cursor = conn.execute('''
                     SELECT d.* FROM documents d
@@ -188,7 +187,6 @@ class UsageTracker:
             List of documents with access counts, sorted by access count descending
         """
         try:
-            import sqlite3
             with self._connect() as conn:
                 rows = conn.execute('''
                     SELECT 
@@ -236,7 +234,6 @@ class UsageTracker:
             Dictionary with trend statistics
         """
         try:
-            import sqlite3
             from datetime import datetime, timedelta
             
             cutoff_date = (datetime.now() - timedelta(days=days)).isoformat()

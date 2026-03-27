@@ -9,7 +9,6 @@ Extracted from production Jawz vector search system.
 
 from typing import Any, Callable
 import hashlib
-import copy
 
 # RRF constants
 DEFAULT_RRF_K = 60          # Empirically proven optimal k value

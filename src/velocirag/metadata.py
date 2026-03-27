@@ -8,11 +8,10 @@ and flexible filtering. Third layer of the Velocirag search stack.
 import json
 import logging
 import sqlite3
-import time
 from contextlib import contextmanager
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Union
+from typing import Dict, List, Optional
 
 logger = logging.getLogger("velocirag.metadata")
 

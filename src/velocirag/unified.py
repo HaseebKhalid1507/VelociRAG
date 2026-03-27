@@ -10,7 +10,6 @@ No layer dominates. All layers contribute. True fusion.
 
 import logging
 import time
-import os
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -264,7 +263,7 @@ class UnifiedSearch:
         # Normalize keyword results — preserve BM25 rank ordering
         keyword_ranked = []
         for i, result in enumerate(keyword_results):
-            doc_id = result.get('doc_id', '')
+            _ = result.get('doc_id', '')
             filename = result.get('file_path', '')
             if filename:
                 # FTS5 rank is negative (lower = better). Normalize to 0-1.

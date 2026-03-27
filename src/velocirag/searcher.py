@@ -18,7 +18,6 @@ from typing import Any, Dict, List, Optional, Callable
 
 import numpy as np
 
-from .variants import generate_variants
 from .rrf import reciprocal_rank_fusion
 from .store import VectorStore
 from .embedder import Embedder
@@ -452,7 +451,7 @@ class Searcher:
         except SearchError:
             raise
         except Exception as e:
-            total_time = (time.time() - start_time) * 1000
+            _ = (time.time() - start_time) * 1000
             raise SearchError(f"Search pipeline failed for query '{query}': {e}")
     
     def search_embedding(
@@ -516,7 +515,6 @@ class Searcher:
             
             # Optional reranking (can't rerank without original query string)
             if self.reranker:
-                rerank_start = time.time()
                 try:
                     logger.warning("Cannot rerank with pre-computed embedding (no query string)")
                     rerank_time = 0.0
@@ -543,7 +541,7 @@ class Searcher:
             return response
             
         except Exception as e:
-            total_time = (time.time() - start_time) * 1000
+            _ = (time.time() - start_time) * 1000
             raise SearchError(f"Embedding search failed: {e}")
     
     def _deduplicate_by_file(self, results: List[Dict]) -> List[Dict]:
@@ -642,7 +640,7 @@ class Searcher:
             self._consistency_cache[store_id] = (is_consistent, time.time())
         
         if not is_consistent:
-            logger.warning(f"Store consistency issues detected")
+            logger.warning("Store consistency issues detected")
             # TODO: Implement async rebuild trigger if store supports it
             
         return is_consistent

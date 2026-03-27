@@ -11,7 +11,6 @@ import json
 import logging
 import os
 import threading
-import time
 import warnings
 import atexit
 import weakref

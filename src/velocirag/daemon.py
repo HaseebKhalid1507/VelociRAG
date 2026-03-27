@@ -111,7 +111,7 @@ class VelociragDaemon:
                     holder.ready = True
                     self.request_count += 1
                     
-            except:
+            except Exception:
                 continue  # Timeout, keep looping
                 
     def _handle_search(self, request):
@@ -168,7 +168,7 @@ class VelociragDaemon:
                     graph_stats = self.unified.graph_store.stats()
                     health["graph_nodes"] = graph_stats.get('nodes', 0)
                     health["graph_edges"] = graph_stats.get('edges', 0)
-                except:
+                except Exception:
                     pass
                     
             return health
@@ -244,7 +244,7 @@ class VelociragDaemon:
         except Exception as e:
             try:
                 conn.sendall(self._encode_response({"error": str(e)}))
-            except:
+            except Exception:
                 pass
         finally:
             conn.close()
@@ -259,7 +259,7 @@ class VelociragDaemon:
                 s.close()
                 print("Daemon already running")
                 return
-            except:
+            except Exception:
                 os.unlink(SOCKET_PATH)
         
         if not foreground:
@@ -432,7 +432,7 @@ def daemon_ping(socket_path: str = SOCKET_PATH) -> bool:
         sock.close()
         
         response = json.loads(response_data.decode('utf-8'))
-        return response.get("pong") == True
+        return response.get("pong") is True
         
-    except:
+    except Exception:
         return False

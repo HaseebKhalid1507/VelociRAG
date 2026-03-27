@@ -5,13 +5,12 @@ Graph build pipeline for Velocirag.
 Clean orchestration with proper error handling and progress reporting.
 """
 
-import os
 import json
 import logging
 from collections import defaultdict
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 import hashlib
 
 from .graph import GraphStore, Node, Edge, NodeType, RelationType
@@ -141,7 +140,8 @@ class GraphPipeline:
             if hasattr(self.entity_analyzer, '_model') and self.entity_analyzer._model is not None:
                 del self.entity_analyzer._model
                 self.entity_analyzer._model = None
-                import gc; gc.collect()
+                import gc
+            gc.collect()
             
             # Stage 4.5: Relation extraction (if available)
             if self.relation_analyzer:
@@ -150,7 +150,8 @@ class GraphPipeline:
                 if hasattr(self.relation_analyzer, '_model') and self.relation_analyzer._model is not None:
                     del self.relation_analyzer._model
                     self.relation_analyzer._model = None
-                    import gc; gc.collect()
+                    import gc
+            gc.collect()
             
             # Stage 5: Temporal analysis
             self._stage_5_temporal_analysis()
@@ -179,7 +180,8 @@ class GraphPipeline:
                 self.embedder._cache.clear()
                 self.embedder = None
             self.topic_analyzer = None
-            import gc; gc.collect()
+            import gc
+            gc.collect()
             logger.info(f"Freed content from {content_freed} nodes + embedder model")
             
             # Stage 8: Graph processing and optimization

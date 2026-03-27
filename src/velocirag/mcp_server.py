@@ -17,7 +17,7 @@ import time
 import logging
 import threading
 from pathlib import Path
-from typing import Optional, Dict, Any, List
+from typing import Dict, Any
 
 from fastmcp import FastMCP
 
@@ -59,7 +59,6 @@ def _init_engine() -> None:
         from .unified import UnifiedSearch
         from .graph import GraphStore
         from .metadata import MetadataStore
-        from .pipeline import GraphPipeline
         
         db_path = _get_db_path()
         db_path.mkdir(parents=True, exist_ok=True)
