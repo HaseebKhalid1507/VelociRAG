@@ -35,7 +35,7 @@ markdown files → chunk → embed → store (SQLite + FAISS)
 | `graph.py` | 909 | Knowledge graph — Node/Edge models, GraphStore (SQLite), GraphQuerier |
 | `unified.py` | 839 | 4-layer fusion search orchestrator — vector + keyword + metadata + graph → RRF |
 | `searcher.py` | 818 | High-level search — query variants, RRF fusion, caching |
-| `analyzers.py` | 789 | 6 graph analyzers + GLiNER NER (optional) |
+| `analyzers.py` | 965 | 7 graph analyzers + GLiNER NER + relation extraction + GLiNER NER (optional) |
 | `metadata.py` | 695 | Metadata store — frontmatter, tags, cross-refs, usage tracking |
 | `pipeline.py` | 573 | 10-stage graph build pipeline |
 | `abstracts.py` | 513 | L0/L1 abstract generation for progressive search |
@@ -45,7 +45,7 @@ markdown files → chunk → embed → store (SQLite + FAISS)
 | `reranker.py` | 166 | Cross-encoder reranking (TinyBERT) |
 | `chunker.py` | 158 | Markdown chunking by headers with parent context preservation |
 | `rrf.py` | 143 | Reciprocal Rank Fusion implementation |
-| `variants.py` | 126 | Query variant generation (casing, spacing, acronyms) |
+| `variants.py` | 250 | Query variant generation + acronym registry + question rewrite (casing, spacing, acronyms) |
 
 ## Key Classes
 
