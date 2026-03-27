@@ -140,10 +140,12 @@ def cli(ctx, verbose: bool):
               help='Extract metadata from frontmatter and content')
 @click.option('--gliner', is_flag=True,
               help='Use GLiNER encoder model for entity extraction (requires pip install velocirag[ner])')
-@click.option('--light-graph', is_flag=True,
-              help='Build graph without semantic similarity (saves ~2GB RAM)')
+@click.option('--light-graph', is_flag=True, hidden=True,
+              help='(Deprecated — now default) Build graph without semantic similarity')
+@click.option('--full-graph', is_flag=True,
+              help='Build graph WITH semantic similarity edges (uses ~2GB extra RAM)')
 @click.pass_context
-def index(ctx, path: str, db: Optional[str], source: str, force: bool, graph: bool, metadata: bool, gliner: bool, light_graph: bool):
+def index(ctx, path: str, db: Optional[str], source: str, force: bool, graph: bool, metadata: bool, gliner: bool, light_graph: bool, full_graph: bool):
     """
     Index a directory of markdown files.
     
@@ -256,7 +258,7 @@ def index(ctx, path: str, db: Optional[str], source: str, force: bool, graph: bo
                     entity_extractor=entity_ext
                 )
                 
-                graph_stats = pipeline.build(str(path), force_rebuild=force, skip_semantic=light_graph)
+                graph_stats = pipeline.build(str(path), force_rebuild=force, skip_semantic=not full_graph, source_name=source)
                 
                 if graph_stats.get('success'):
                     click.echo(success("Graph build complete:"))

@@ -33,14 +33,13 @@ dependencies = [
     "python-frontmatter>=1.0",
     "pyyaml>=6.0",
     "click>=8.0",
+    "networkx>=3.0",
+    "scikit-learn>=1.0",
 ]
 
 [project.optional-dependencies]
 reranker = []  # Reranker uses onnxruntime + tokenizers (already in base deps)
-graph = [
-    "networkx>=3.0",
-    "scikit-learn>=1.0",
-]
+graph = []     # Graph uses networkx + scikit-learn (already in base deps)
 ner = [
     "gliner>=0.2.0",
 ]
