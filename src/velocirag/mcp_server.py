@@ -32,6 +32,7 @@ logger = logging.getLogger("velocirag.mcp")
 # Global engine state for lazy initialization
 _engine: Dict[str, Any] = {}
 _engine_lock = threading.Lock()
+_engine_ready = threading.Event()
 
 def _get_db_path() -> Path:
     """Get database path from environment or default."""
@@ -42,12 +43,12 @@ def _get_db_path() -> Path:
 
 def _init_engine() -> None:
     """Lazily initialize the Velocirag engine on first use. Thread-safe."""
-    if _engine.get('initialized'):
+    if _engine_ready.is_set():
         return
     
     with _engine_lock:
         # Double-check after acquiring lock (prevents race condition on SSE transport)
-        if _engine.get('initialized'):
+        if _engine_ready.is_set():
             return
         
         logger.info("Initializing VelociRAG engine...")
@@ -95,7 +96,7 @@ def _init_engine() -> None:
             metadata_store=_engine['metadata_store']
         )
         
-        _engine['initialized'] = True
+        _engine_ready.set()
         logger.info(f"VelociRAG engine ready — {_engine['store'].count()} docs, "
                     f"graph={'yes' if _engine['graph_store'] else 'no'}, "
                     f"metadata={'yes' if _engine['metadata_store'] else 'no'}")

@@ -37,7 +37,7 @@ class ResultHolder:
 class VelociragDaemon:
     def __init__(self, db_path: str):
         self.db_path = db_path
-        self._work_queue = Queue()
+        self._work_queue = Queue(maxsize=100)
         self.running = False
         self.request_count = 0
         self.start_time = None
@@ -221,10 +221,14 @@ class VelociragDaemon:
             if not request:
                 return
                 
-            # Submit to worker queue
+            # Submit to worker queue (bounded — rejects if overloaded)
             holder = ResultHolder()
             holder.response = request  # Store request in holder initially
-            self._work_queue.put(holder)
+            try:
+                self._work_queue.put(holder, timeout=5.0)
+            except Exception:
+                self._send_response(conn, {"error": "Server overloaded, try again later"})
+                return
             
             # Wait for worker to process
             timeout = 30.0

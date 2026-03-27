@@ -26,6 +26,7 @@ from .embedder import Embedder
 
 # Constants
 CURRENT_SCHEMA_VERSION = 2
+INDEX_FORMAT_VERSION = 1  # Bump when embedding model or FAISS index type changes
 DEFAULT_EMBEDDING_DIMENSIONS = 384
 BATCH_REBUILD_THRESHOLD = 50
 
@@ -754,6 +755,7 @@ class VectorStore:
             faiss.write_index(self._faiss_l1_index, str(self.faiss_l1_path))
         
         self._index_dirty = False
+        self._store_metadata('index_format_version', str(INDEX_FORMAT_VERSION))
         l0_count = self._faiss_l0_index.ntotal if self._faiss_l0_index else 0
         l1_count = self._faiss_l1_index.ntotal if self._faiss_l1_index else 0
         logger.info(f"FAISS indices rebuilt: {self._faiss_index.ntotal} L2, {l0_count} L0, {l1_count} L1 (batch_size={batch_size})")
@@ -964,8 +966,22 @@ class VectorStore:
 
     def _validate_startup(self) -> None:
         """Validate consistency on startup."""
-        # Load dimensions from metadata
         with self._connect() as conn:
+            # Check index format version — refuse incompatible indices
+            result = conn.execute('''
+                SELECT value FROM metadata WHERE key = 'index_format_version'
+            ''').fetchone()
+            
+            if result:
+                stored_version = int(result[0])
+                if stored_version != INDEX_FORMAT_VERSION:
+                    logger.warning(
+                        f"Index format version mismatch: stored={stored_version}, "
+                        f"current={INDEX_FORMAT_VERSION}. Rebuilding index."
+                    )
+                    self._index_dirty = True
+            
+            # Load dimensions from metadata
             result = conn.execute('''
                 SELECT value FROM metadata WHERE key = 'embedding_dimensions'
             ''').fetchone()
