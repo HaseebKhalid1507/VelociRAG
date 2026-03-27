@@ -471,14 +471,22 @@ class VectorStore:
                 return []
             
             # Escape for FTS5: wrap each word in quotes to prevent syntax issues
-            # FTS5 special chars: *, ^, (, ), -, AND, OR, NOT, NEAR
+            # FTS5 special chars: *, ^, (, ), -, AND, OR, NOT, NEAR, \, :, {, }
             words = query.strip().split()
             safe_tokens = []
+            # Define safe characters - alphanumeric, spaces, and basic punctuation
+            SAFE_CHARS = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789 ._-"
+            
             for word in words:
-                # Strip FTS5 operators, wrap in quotes for exact matching
-                cleaned = word.replace('"', '').replace("'", "")
-                if cleaned:
-                    safe_tokens.append(f'"{cleaned}"')
+                # Strip/escape all FTS5 special characters
+                cleaned = word.replace('"', '').replace("'", "").replace('\\', '')
+                cleaned = cleaned.replace('(', '').replace(')', '').replace(':', '')
+                cleaned = cleaned.replace('{', '').replace('}', '').replace('*', '')
+                cleaned = cleaned.replace('^', '').replace('-', '').replace('[', '').replace(']', '')
+                # Filter to only safe characters
+                cleaned = ''.join(c for c in cleaned if c in SAFE_CHARS)
+                if cleaned and cleaned.strip():
+                    safe_tokens.append(f'"{cleaned.strip()}"')
             
             if not safe_tokens:
                 return []
@@ -495,8 +503,9 @@ class VectorStore:
                     ORDER BY rank
                     LIMIT ?
                 ''', (safe_query, limit)).fetchall()
-            except Exception:
+            except Exception as e:
                 # Last resort: try as a single phrase
+                logging.warning(f"FTS5 query failed with safe_query '{safe_query}': {e}")
                 try:
                     phrase = query.replace('"', '').replace("'", "")
                     rows = conn.execute('''
@@ -508,7 +517,8 @@ class VectorStore:
                         ORDER BY rank
                         LIMIT ?
                     ''', (f'"{phrase}"', limit)).fetchall()
-                except Exception:
+                except Exception as e:
+                    logging.warning(f"FTS5 phrase query also failed with phrase '{phrase}': {e}")
                     return []
             
             results = []
@@ -842,15 +852,7 @@ class VectorStore:
                 )
             ''')
             
-            # FTS5 full-text search table for BM25 keyword retrieval
-            conn.execute('''
-                CREATE VIRTUAL TABLE IF NOT EXISTS chunks_fts USING fts5(
-                    doc_id,
-                    content,
-                    file_path,
-                    tokenize='porter unicode61'
-                )
-            ''')
+
             
             # Indexes
             conn.execute('CREATE INDEX IF NOT EXISTS idx_documents_doc_id ON documents(doc_id)')

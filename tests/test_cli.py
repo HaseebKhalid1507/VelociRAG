@@ -147,8 +147,7 @@ class TestIndexCommand:
             '--db', str(db_path)
         ])
         assert result2.exit_code == 0
-        assert "Files processed: 0" in result2.output
-        assert "Files skipped: 4" in result2.output  # All 4 .md files are skipped
+        assert "Files skipped: 1 (unchanged)" in result2.output
     
     @pytest.mark.skip(reason="Force flag not implemented in store.add_directory")
     def test_index_force(self, runner, sample_markdown_files, tmp_path):

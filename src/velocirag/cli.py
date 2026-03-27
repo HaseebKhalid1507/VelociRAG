@@ -1366,5 +1366,17 @@ def query(ctx, db: Optional[str], tags: tuple, status: str, category: str,
         sys.exit(1)
 
 
+@cli.command()
+@click.option('--db', default=None, help='Database path (default: VELOCIRAG_DB env or ./.velocirag)')
+@click.option('--transport', default='stdio', type=click.Choice(['stdio', 'sse']), help='MCP transport')
+def mcp(db, transport):
+    """Start the VelociRAG MCP server for AI agent integration."""
+    import os
+    if db:
+        os.environ['VELOCIRAG_DB'] = str(Path(db).expanduser().absolute())
+    from .mcp_server import mcp as mcp_server
+    mcp_server.run(transport=transport)
+
+
 if __name__ == '__main__':
     cli()
