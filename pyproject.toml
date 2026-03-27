@@ -36,9 +36,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-reranker = [
-    "sentence-transformers>=2.2",
-]
+reranker = []  # Reranker uses onnxruntime + tokenizers (already in base deps)
 graph = [
     "networkx>=3.0",
     "scikit-learn>=1.0",
