@@ -10,12 +10,10 @@ import logging
 import warnings
 from typing import Dict, List, Any
 
-# Optional sentence-transformers dependency
-try:
-    from sentence_transformers import CrossEncoder
-    HAS_CROSS_ENCODER = True
-except ImportError:
-    HAS_CROSS_ENCODER = False
+# Lazy import — sentence-transformers pulls in PyTorch (~2.5s).
+# Defer until the model is actually needed.
+HAS_CROSS_ENCODER = None  # Tri-state: None = unchecked, True/False = resolved
+CrossEncoder = None
 
 # Constants
 DEFAULT_MODEL = "cross-encoder/ms-marco-TinyBERT-L-2-v2"
@@ -123,27 +121,37 @@ class Reranker:
     
     def _load_model(self) -> None:
         """Load cross-encoder model with warning suppression."""
+        global HAS_CROSS_ENCODER, CrossEncoder
+
         if self._loaded or self._load_error:
             return
-        
-        # Check if sentence-transformers is available
+
+        # Lazy-resolve: first time, try importing sentence-transformers
+        if HAS_CROSS_ENCODER is None:
+            try:
+                from sentence_transformers import CrossEncoder as _CE
+                CrossEncoder = _CE
+                HAS_CROSS_ENCODER = True
+            except ImportError:
+                HAS_CROSS_ENCODER = False
+
         if not HAS_CROSS_ENCODER:
             self._load_error = "sentence-transformers not installed (install with: pip install velocirag[reranker])"
             logger.warning(f"Cross-encoder unavailable: {self._load_error}")
             return
-        
+
         try:
             logger.info(f"Loading cross-encoder model: {self.model_name}")
-            
+
             # Suppress warnings during model loading
             with warnings.catch_warnings():
                 warnings.filterwarnings("ignore")
-                
+
                 # Temporarily suppress sentence-transformers logging
                 st_logger = logging.getLogger("sentence_transformers")
                 original_level = st_logger.level
                 st_logger.setLevel(logging.CRITICAL)
-                
+
                 try:
                     self._model = CrossEncoder(self.model_name)
                     self._loaded = True
