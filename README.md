@@ -1,223 +1,219 @@
-# 🦖 Velocirag
+# 🦖 VelociRAG
 
-**Sub-second semantic search for markdown knowledge bases with four-layer fusion.**
+**Lightning-fast RAG for AI agents.**
 
-Point it at a folder of markdown files. Get lightning-fast search with vector similarity, BM25 keyword matching, knowledge graph traversal, and metadata filtering — all fused via RRF with cross-encoder reranking. 99/100 queries hit on a real 3,357-document knowledge base.
+_RAG engine, not a RAG framework. 4-layer retrieval fusion in 80ms. No LLM in the search path. MCP-ready._
 
-## ✨ Features
+---
 
-- **🚀 Sub-second search** — 80ms average (warm), 384-dim embeddings, runs on 8GB RAM
-- **🧠 Four-layer fusion** — Vector + BM25 keyword + knowledge graph + metadata → RRF
-- **🔑 BM25 keyword search** — SQLite FTS5 catches exact matches vectors miss (IPs, passwords, codes)
-- **🎯 Cross-encoder reranking** — Auto-initialized TinyBERT reranker, no manual wiring needed
-- **🧬 GLiNER entity extraction** — Optional zero-hallucination NER for typed, scored knowledge graph entities
-- **🔗 Relation extraction** — GLiNER Multitask finds semantic relationships between entities (uses, enables, evolved_from)
-- **📝 Header-aware chunking** — Splits by `##`/`###` headers, preserves parent context
-- **🔍 Smart query expansion** — 42-term acronym registry, question→statement rewrite, case/spacing variants
-- **📊 Knowledge graph** — 7 analyzers (entity, relation, temporal, topic, semantic, centrality, explicit)
-- **🏷️ Smart metadata** — Frontmatter extraction, tag filtering, project organization
-- **🩺 Health checks** — Full stack diagnostics via CLI and daemon endpoint
-- **💾 No GPU required** — CPU-only, scales to thousands of docs on modest hardware
+Every agent framework needs retrieval. Most RAG solutions are heavy orchestration frameworks (LangChain, LlamaIndex) that bundle their own agent loop. VelociRAG is the opposite — a **pure retrieval engine** that any agent can plug into. Four-layer fusion (vector + BM25 + graph + metadata), cross-encoder reranking, 80ms warm queries, and zero API dependencies. It's a search engine that speaks agent.
 
 ## 🚀 Quick Start
 
+### MCP Server (Flagship)
+
 ```bash
-# Install
-pip install git+https://github.com/HaseebKhalid1507/VelociRAG.git
-
-# Index your knowledge base
-velocirag index ./my-notes/ --graph --metadata
-
-# Search
-velocirag search "machine learning fundamentals"
-
-# Health check
-velocirag health
+pip install "velocirag[mcp]"
+velocirag index ./my-docs --graph --metadata
+velocirag mcp
 ```
+
+**Claude Desktop config:**
+```json
+{
+  "mcpServers": {
+    "velocirag": {
+      "command": "velocirag", 
+      "args": ["mcp", "--db", "/path/to/data"]
+    }
+  }
+}
+```
+
+**Cursor config:**
+```json
+{
+  "mcp": {
+    "velocirag": {
+      "command": "velocirag",
+      "args": ["mcp", "--db", "/path/to/data"]
+    }
+  }
+}
+```
+
+### Python API
+
+```python
+from velocirag import Embedder, VectorStore, Searcher
+embedder = Embedder()
+store = VectorStore('./my-db', embedder)
+store.add_directory('./my-docs')
+searcher = Searcher(store, embedder)
+results = searcher.search('query', limit=5)
+```
+
+### CLI
+
+```bash
+pip install velocirag
+velocirag index ./my-docs --graph --metadata
+velocirag search "your query here"
+```
+
+## 🎯 Why VelociRAG?
+
+| | VelociRAG | LangChain | LlamaIndex | Chroma | mcp-local-rag |
+|---|:---:|:---:|:---:|:---:|:---:|
+| **Search layers** | 4 | 2 | 2 | 1 | 2 |
+| **Cross-encoder reranking** | ✅ | ❌ | ✅ | ❌ | ❌ |
+| **Knowledge graph** | ✅ | ❌ | ✅ | ❌ | ❌ |
+| **LLM required for search** | ❌ | ⚠️ | ⚠️ | ❌ | ❌ |
+| **MCP server** | ✅ | ❌ | ❌ | ❌ | ✅ |
+| **GPU required** | ❌ | ❌ | ❌ | ❌ | ❌ |
+| **Warm search latency** | ~80ms | — | — | ~50ms | ~200ms |
+
+## 🏗️ How It Works
+
+**The 4-layer pipeline:**
+```
+Query → expand (acronyms, variants)
+      → [Vector]   FAISS cosine similarity (384d, MiniLM-L6-v2)
+      → [Keyword]  BM25 via SQLite FTS5
+      → [Graph]    Knowledge graph traversal
+      → [Metadata] Structured SQL filters (tags, status, project)
+      → RRF Fusion → Cross-encoder rerank → Results
+```
+
+**What each layer catches:**
+
+| Query type | Vector | Keyword | Graph | Metadata |
+|-----------|:---:|:---:|:---:|:---:|
+| Conceptual ("improve error handling") | ✅ | — | — | — |
+| Exact match ("ERR_CONNECTION_REFUSED") | — | ✅ | — | — |
+| Connected concepts | — | — | ✅ | — |
+| Filtered ("#python status:active") | — | — | — | ✅ |
+| Combined ("React state management") | ✅ | ✅ | — | ✅ |
+
+## ✨ Features
+
+- **Sub-second search** — 80ms warm, CPU-only, runs on 8GB RAM
+- **Four-layer fusion** — Vector + BM25 + graph + metadata → RRF
+- **Cross-encoder reranking** — TinyBERT, auto-initialized
+- **MCP server for AI agents** — Claude Desktop, Cursor, Windsurf, etc.
+- **Knowledge graph** — 7 analyzers, optional GLiNER NER
+- **Header-aware markdown chunking** — Preserves document structure
+- **Smart query expansion** — Acronyms, variants, question rewrite
+- **No GPU, no API keys** — Pure CPU, zero external dependencies
+
+## 🤖 MCP Server
+
+VelociRAG exposes a Model Context Protocol server for seamless agent integration:
+
+**Available tools:**
+- `search` — 4-layer fusion search with reranking
+- `index` — Add documents to the knowledge base  
+- `add_document` — Insert single document
+- `health` — System diagnostics
+- `list_sources` — Show indexed document sources
+
+Models stay warm after first query (80ms average response time). Compatible with any MCP-enabled agent framework.
 
 ## 🐍 Python API
 
+**Full 4-layer unified search:**
 ```python
 from velocirag import (
     Embedder, VectorStore, Searcher,
     GraphStore, MetadataStore, UnifiedSearch,
-    GraphPipeline, UsageTracker
+    GraphPipeline
 )
 
-# Index — one line
+# Build the full stack
 embedder = Embedder()
-store = VectorStore('./my-search-db', embedder)
-store.add_directory('./my-notes')
+store = VectorStore('./search-db', embedder)
+graph_store = GraphStore('./search-db/graph.db')
+metadata_store = MetadataStore('./search-db/metadata.db')
 
-# Search — reranker auto-initializes, no manual setup
-searcher = Searcher(store, embedder)
-results = searcher.search('machine learning', limit=5)
-
-# BM25 keyword search (exact matches)
-store.rebuild_fts()
-results = store.keyword_search('192.168.1.1', limit=5)
-
-# Full 4-layer fusion
-graph_store = GraphStore('./my-search-db/graph.db')
-metadata_store = MetadataStore('./my-search-db/metadata.db')
+# Index with graph + metadata
+store.add_directory('./docs')
 pipeline = GraphPipeline(graph_store, embedder, metadata_store)
-pipeline.build('./my-notes')
+pipeline.build('./docs')
 
+# Unified search across all layers
+searcher = Searcher(store, embedder)
 unified = UnifiedSearch(searcher, graph_store, metadata_store)
 results = unified.search(
-    'machine learning',
+    'machine learning algorithms',
     limit=5,
     enrich_graph=True,
     filters={'tags': ['python'], 'status': 'active'}
 )
 ```
 
-### GLiNER Entity + Relation Extraction
-
-```bash
-pip install velocirag[ner]
-velocirag index ./my-notes/ --graph --metadata --gliner
-```
-
+**Quick semantic search:**
 ```python
-# Typed entities with confidence scores
-pipeline = GraphPipeline(graph_store, embedder, metadata_store, entity_extractor='gliner')
-pipeline.build('./my-notes')
-# → [person] "Haseeb" (0.979)
-# → [technology] "React" (0.927)
-# → [organization] "NJIT" (0.964)
+from velocirag import Embedder, VectorStore, Searcher
 
-# Semantic relations between entities
-# → NiteSpeed --[part_of]--> NJIT
-# → Kubernetes --[evolved_from]--> Docker Swarm
+embedder = Embedder()
+store = VectorStore('./db', embedder)
+store.add_directory('./docs')
+searcher = Searcher(store, embedder)
+results = searcher.search('neural networks', limit=10)
 ```
-
-### Custom Acronym Registry
-
-```python
-from velocirag.variants import register_acronyms
-
-register_acronyms({
-    'loar': 'law of accelerating returns',
-    'njit': 'new jersey institute of technology'
-})
-# Now "loar" auto-expands in search queries
-```
-
-## 🏗️ Architecture
-
-```
-Query → expand (acronyms, variants, question rewrite)
-      → [Vector]   FAISS cosine similarity (384d, MiniLM-L6-v2)
-      → [Keyword]  BM25 via SQLite FTS5 (exact match)
-      → [Graph]    Knowledge graph traversal (GLiNER entities + relations)
-      → [Metadata] Structured SQL filters (tags, status, project)
-      → RRF Fusion (merge all layers by rank)
-      → Cross-encoder rerank (TinyBERT, auto-initialized)
-      → Results with graph enrichment
-```
-
-### What each layer catches
-
-| Query type | Vector | Keyword | Graph | Metadata |
-|-----------|--------|---------|-------|----------|
-| Semantic ("improving study habits") | ✅ | — | — | — |
-| Exact match ("192.168.1.167") | — | ✅ | — | — |
-| Connected concepts | — | — | ✅ | — |
-| Filtered ("tag:python status:active") | — | — | — | ✅ |
-| Combined ("CS634 data mining") | ✅ | ✅ | ✅ | — |
-
-### Knowledge Graph
-
-Seven analyzers build the graph from your markdown:
-
-| Analyzer | What it finds |
-|----------|-------------|
-| **Explicit** | `[[wiki links]]` and references |
-| **Entity** | Named entities via regex or GLiNER (person, technology, concept, organization) |
-| **Relation** | Semantic relationships via GLiNER Multitask (uses, enables, evolved_from, created_by) |
-| **Temporal** | Date relationships and sequences |
-| **Topic** | Thematic clustering |
-| **Semantic** | Conceptual similarity |
-| **Centrality** | Document importance scoring |
 
 ## 💻 CLI Reference
 
 ```bash
-# Indexing
-velocirag index <path> [--graph] [--metadata] [--gliner] [--force] [--db PATH]
+# Index documents with all layers
+velocirag index <path> [--graph] [--metadata] [--gliner] [--force]
 
-# Search — shows active layers, reranker scores, file paths
-velocirag search <query> [--limit N] [--threshold F] [--format text|json|compact]
+# Search across all layers
+velocirag search <query> [--limit N] [--threshold F] [--format text|json]
 
 # Metadata queries
-velocirag query [--tags TAG] [--status S] [--category C] [--project P] [--stale N] [--recent N]
+velocirag query [--tags TAG] [--status S] [--project P] [--recent N]
 
-# Health check (all components)
-velocirag health [--db PATH] [--format text|json]
+# System health and status
+velocirag health [--format text|json]
+velocirag status
 
-# Status & maintenance
-velocirag status [--db PATH]
-velocirag reindex [--db PATH]
+# Start MCP server
+velocirag mcp [--db PATH] [--transport stdio|sse]
 ```
-
-### CLI Search Output
-
-```
-$ velocirag search "wireguard VPN setup" --db ./data
-
-Query: "wireguard VPN setup"
-Found 3 results in 293ms [vector + keyword + graph]
-
-1. [0.686] projects/jade-homelab.md
-   rerank=4.40 | via vector
-   ### Wireguard VPN (wg-easy) - Container: wg-easy - Ports: 51820/udp...
-
-2. [0.392] 3. Learning/Concepts/VPN.md
-   rerank=-4.24 | via vector | → LDAP, OS Security
-   # VPN - Virtual Private Networks extend private networks across...
-```
-
-## ⚙️ Configuration
-
-```bash
-export VELOCIRAG_DB=/path/to/db   # Default database location
-export NO_COLOR=1                 # Disable colored output
-```
-
-| Parameter | Default | Range |
-|-----------|---------|-------|
-| Similarity threshold | 0.3 | 0.0–1.0 |
-| Result limit | 5 | 1–50 |
-| Embedding model | all-MiniLM-L6-v2 | 384 dimensions |
-| Cross-encoder | TinyBERT-L-2-v2 | ~17MB, auto-initialized |
-| GLiNER entity model | gliner_small-v2.1 | ~170MB, optional |
-| GLiNER relation model | gliner-multitask-large-v0.5 | ~1.5GB, optional |
-| Acronym registry | 42 built-in terms | Extensible via `register_acronyms()` |
 
 ## 📊 Performance
 
-Real numbers from a production deployment (3,357 documents, 831 markdown files):
+Real benchmarks from production deployment (3,357 documents):
 
 | Metric | Value |
 |--------|-------|
-| Average query time (warm) | **80ms** |
-| p50 / p95 / max | 90ms / 198ms / 328ms |
-| Cold start | ~3s |
-| BM25 keyword layer | ~3ms |
-| Hit rate (100-query benchmark) | **99/100** |
-| RAM usage (with models) | <8GB |
-| Graph | 1,336 nodes, 16,818 edges |
-| GLiNER entities | 617 typed + scored |
+| **Average query time (warm)** | **80ms** |
+| **p50 / p95 / max** | 90ms / 198ms / 328ms |
+| **Cold start** | ~3s |
+| **Hit rate (100-query benchmark)** | **99/100** |
+| **RAM usage with all models** | <8GB |
+| **Graph nodes/edges** | 1,336 nodes, 16,818 edges |
 
-## 🤖 AI Agent Integration
+## ⚙️ Configuration
 
-See [AGENTS.md](AGENTS.md) for machine-readable project context — module map, class signatures, response formats, and development patterns for AI coding assistants.
+| Environment Variable | Default | Description |
+|---------------------|---------|-------------|
+| `VELOCIRAG_DB` | `./data` | Database directory |
+| `NO_COLOR` | `false` | Disable colored output |
+
+**Model Configuration:**
+- **Embedding:** all-MiniLM-L6-v2 (384d)
+- **Cross-encoder:** TinyBERT-L-2-v2 (~17MB)
+- **Entity extraction:** GLiNER-small-v2.1 (~170MB, optional)
+- **Similarity threshold:** 0.3 (configurable)
 
 ## 📄 License
 
-[PolyForm Noncommercial 1.0.0](LICENSE) — Free for personal, research, and non-commercial use.
+[MIT](LICENSE) — Use it anywhere, build anything.
+
+**Need agent integration help?** Check [AGENTS.md](AGENTS.md) for machine-readable project context.
 
 ---
 
-Built by someone who actually uses it daily. Not a VC-funded startup. Just fast, precise search for people who think in markdown.
+_Built for agents who think fast and search faster._

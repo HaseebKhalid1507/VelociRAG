@@ -4,13 +4,13 @@
 
 ## What Is This?
 
-Velocirag is a **multi-layer RAG engine for markdown knowledge bases**. It indexes folders of `.md` files and provides semantic search with 4 retrieval layers fused via RRF.
+Velocirag is **lightning-fast RAG for AI agents**. Pure retrieval engine with 4-layer fusion, 80ms warm queries, and MCP server integration.
 
 - **Language:** Python 3.10+
 - **Source:** `src/velocirag/` (17 modules, ~9K lines)
 - **Tests:** `tests/` (18 test files)
 - **CLI:** `velocirag` (click-based)
-- **License:** PolyForm Noncommercial 1.0.0
+- **License:** MIT
 
 ## Architecture
 
@@ -188,11 +188,12 @@ velocirag/
 │   ├── frontmatter.py   # YAML frontmatter parsing
 │   ├── tracker.py       # Usage tracking
 │   ├── abstracts.py     # L0/L1 abstract generation
-│   └── cli.py           # Click CLI
+│   ├── cli.py           # Click CLI
+│   └── mcp_server.py    # MCP server for agent integration
 ├── tests/               # 18 test files, pytest
 ├── examples/            # basic_search.py, unified_search.py
 ├── docs/internal/       # Design specs (internal dev docs)
 ├── pyproject.toml       # Package config
 ├── README.md            # User-facing documentation
-└── LICENSE              # PolyForm Noncommercial 1.0.0
+└── LICENSE              # MIT
 ```
