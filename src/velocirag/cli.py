@@ -10,8 +10,22 @@ import json
 import os
 import sys
 import time
+import warnings
+import logging
 from pathlib import Path
 from typing import Optional, Dict, Any
+
+# Suppress noisy model loading output
+os.environ.setdefault('TOKENIZERS_PARALLELISM', 'false')
+os.environ.setdefault('HF_HUB_DISABLE_PROGRESS_BARS', '1')
+os.environ.setdefault('HF_HUB_DISABLE_TELEMETRY', '1')
+os.environ.setdefault('TRANSFORMERS_VERBOSITY', 'error')
+os.environ.setdefault('TRANSFORMERS_LOAD_REPORT', '0')
+warnings.filterwarnings('ignore')
+logging.getLogger('transformers').setLevel(logging.ERROR)
+logging.getLogger('sentence_transformers').setLevel(logging.ERROR)
+logging.getLogger('httpx').setLevel(logging.ERROR)
+logging.getLogger('velocirag.tracker').setLevel(logging.ERROR)
 
 import click
 
@@ -458,8 +472,13 @@ def search(ctx, query: str, db: Optional[str], limit: int,
             
             # Header
             click.echo(f"Query: \"{query}\"")
-            mode_str = f" ({results.get('search_mode', 'vector')})" if verbose else ""
-            click.echo(info(f"Found {total_results} result{'s' if total_results != 1 else ''} in {search_time:.0f}ms{mode_str}"))
+            
+            # Show active layers
+            layer_stats = results.get('layer_stats', {})
+            active_layers = [l for l, s in layer_stats.items() if s.get('candidates', 0) > 0]
+            layers_str = f" [{' + '.join(active_layers)}]" if active_layers else ""
+            
+            click.echo(info(f"Found {total_results} result{'s' if total_results != 1 else ''} in {search_time:.0f}ms{layers_str}"))
             click.echo()
             
             # Results
@@ -482,24 +501,30 @@ def search(ctx, query: str, db: Optional[str], limit: int,
                 if metadata.get('_metadata_match'):
                     score_str += " " + success("✓")
                 
-                click.echo(f"{i}. {score_str} {doc_id}")
+                # File path
+                file_path = metadata.get('file_path', doc_id)
+                click.echo(f"{i}. {score_str} {file_path}")
+                
+                # Source info line (reranker, layers, graph)
+                info_parts = []
+                rerank = metadata.get('rerank_score')
+                if rerank is not None:
+                    info_parts.append(f"rerank={rerank:.2f}")
+                source_layers = metadata.get('source_layers', '')
+                if source_layers:
+                    info_parts.append(f"via {source_layers}")
+                if metadata.get('found_in_graph'):
+                    connections = metadata.get('graph_connections', [])[:3]
+                    if connections:
+                        info_parts.append(f"→ {', '.join(connections)}")
+                if info_parts:
+                    click.echo(f"   {' | '.join(info_parts)}")
                 
                 # Content preview (truncated)
                 preview = content[:200].replace('\n', ' ').strip()
                 if len(content) > 200:
                     preview += "..."
                 click.echo(f"   {preview}")
-                
-                # Show graph connections if available
-                if metadata.get('graph_connections'):
-                    connections = metadata['graph_connections'][:3]
-                    click.echo(f"   Connections: {', '.join(connections)}")
-                
-                # Show metadata if filters were used
-                if filters and metadata.get('found_in_graph'):
-                    file_path = metadata.get('file_path', '')
-                    if file_path:
-                        click.echo(f"   File: {Path(file_path).name}")
                 
                 if i < len(results['results']):  # Don't add newline after last result
                     click.echo()
