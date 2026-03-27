@@ -126,6 +126,94 @@ class ExplicitAnalyzer:
             if title_lower in node.title.lower() or node.title.lower() in title_lower:
                 return node
         return None
+    
+    def analyze_incremental(
+        self,
+        changed_nodes: List[Node],     # nodes from changed files only
+        all_nodes: List[Node],         # full corpus for lookups
+        existing_edges: List[Edge],    # current graph edges for context
+        changed_files: Set[str]        # set of absolute file paths that changed
+    ) -> Tuple[List[Node], List[Edge]]:
+        """Returns (new_nodes_to_add, new_edges_to_add) for changed files only.
+        Caller has already removed old nodes/edges for changed files.
+        
+        Process wikilinks and tags from changed_nodes only. Resolve wikilink
+        targets against all_nodes (full corpus)."""
+        new_nodes = []
+        new_edges = []
+        all_tags = set()
+        
+        # First pass: collect all tags from changed nodes only
+        for node in changed_nodes:
+            if node.type == NodeType.NOTE and node.content:
+                tags = self._extract_tags(node.content)
+                all_tags.update(tags)
+        
+        # Create tag nodes
+        tag_nodes = {}
+        for tag in all_tags:
+            tag_id = f"tag_{tag.lower()}"
+            tag_node = Node(
+                id=tag_id,
+                type=NodeType.TAG,
+                title=f"#{tag}",
+                metadata={'tag_name': tag}
+            )
+            new_nodes.append(tag_node)
+            tag_nodes[tag] = tag_id
+        
+        # Second pass: create relationships for changed nodes only
+        for node in changed_nodes:
+            if node.type != NodeType.NOTE or not node.content:
+                continue
+            
+            # Wiki-link relationships
+            wikilinks = self._extract_wikilinks(node.content)
+            for link in wikilinks:
+                # Find target node by title in full corpus
+                target_node = self._find_node_by_title(all_nodes + new_nodes, link)
+                if target_node:
+                    edge_id = f"ref_{node.id}_{target_node.id}"
+                    # Check if this is a cross-file reference
+                    is_cross_file = False
+                    if hasattr(node, 'metadata') and hasattr(target_node, 'metadata'):
+                        source_file = node.metadata.get('source_file') or node.metadata.get('file_path')
+                        target_file = target_node.metadata.get('source_file') or target_node.metadata.get('file_path')
+                        if source_file and target_file:
+                            is_cross_file = source_file != target_file
+                    
+                    edge = Edge(
+                        id=edge_id,
+                        source_id=node.id,
+                        target_id=target_node.id,
+                        type=RelationType.REFERENCES,
+                        weight=0.8,
+                        confidence=0.9,
+                        metadata={
+                            'link_text': link,
+                            'is_cross_file': is_cross_file
+                        }
+                    )
+                    new_edges.append(edge)
+            
+            # Tag relationships
+            tags = self._extract_tags(node.content)
+            for tag in tags:
+                if tag in tag_nodes:
+                    edge_id = f"tagged_{node.id}_{tag_nodes[tag]}"
+                    edge = Edge(
+                        id=edge_id,
+                        source_id=node.id,
+                        target_id=tag_nodes[tag],
+                        type=RelationType.TAGGED_AS,
+                        weight=0.7,
+                        confidence=1.0,
+                        metadata={'tag_name': tag}
+                    )
+                    new_edges.append(edge)
+        
+        logger.info(f"ExplicitAnalyzer.analyze_incremental: {len(new_nodes)} nodes, {len(new_edges)} edges")
+        return new_nodes, new_edges
 
 
 class TemporalAnalyzer:
@@ -244,6 +332,86 @@ class TemporalAnalyzer:
                 })
         
         return dated_nodes
+    
+    def analyze_incremental(
+        self,
+        changed_nodes: List[Node],     # nodes from changed files only
+        all_nodes: List[Node],         # full corpus for lookups
+        existing_edges: List[Edge],    # current graph edges for context
+        changed_files: Set[str]        # set of absolute file paths that changed
+    ) -> Tuple[List[Node], List[Edge]]:
+        """Returns (new_nodes_to_add, new_edges_to_add) for changed files only.
+        Caller has already removed old nodes/edges for changed files.
+        
+        Extract dates from changed_nodes. Find nodes in all_nodes within ±7 day window.
+        Return temporal edges between changed files and their temporal neighbors."""
+        new_nodes = []
+        new_edges = []
+        
+        # Extract dates from changed nodes only
+        changed_dated_nodes = self._extract_dates_from_nodes(changed_nodes)
+        if not changed_dated_nodes:
+            return new_nodes, new_edges
+        
+        # Extract dates from all nodes for comparison
+        all_dated_nodes = self._extract_dates_from_nodes(all_nodes)
+        if len(all_dated_nodes) < 2:
+            return new_nodes, new_edges
+        
+        # Create temporal edges between changed nodes and their temporal neighbors
+        edge_counts = Counter()  # track per-node edge count
+        
+        for changed_node_info in changed_dated_nodes:
+            source_id = changed_node_info['node'].id
+            source_date = changed_node_info['date']
+            
+            if edge_counts[source_id] >= self.MAX_EDGES_PER_NODE:
+                continue
+            
+            # Find temporal neighbors in the full corpus
+            for other_node_info in all_dated_nodes:
+                target_id = other_node_info['node'].id
+                
+                # Skip self
+                if source_id == target_id:
+                    continue
+                
+                if edge_counts[target_id] >= self.MAX_EDGES_PER_NODE:
+                    continue
+                
+                time_diff = abs((other_node_info['date'] - source_date).days)
+                
+                if time_diff > self.window_days:
+                    continue  # Outside temporal window
+                
+                edge_id = f"temporal_{source_id}_{target_id}"
+                weight = max(0.3, 1.0 - (time_diff / self.window_days) * 0.5)
+                
+                edge = Edge(
+                    id=edge_id,
+                    source_id=source_id,
+                    target_id=target_id,
+                    type=RelationType.TEMPORAL,
+                    weight=weight,
+                    confidence=0.7,
+                    metadata={
+                        'temporal_type': 'concurrent',
+                        'days_apart': time_diff,
+                    }
+                )
+                new_edges.append(edge)
+                edge_counts[source_id] += 1
+                edge_counts[target_id] += 1
+                
+                if len(new_edges) >= self.MAX_TEMPORAL_EDGES:
+                    logger.warning(f"TemporalAnalyzer.analyze_incremental: hit {self.MAX_TEMPORAL_EDGES} edge cap")
+                    break
+            
+            if len(new_edges) >= self.MAX_TEMPORAL_EDGES:
+                break
+        
+        logger.info(f"TemporalAnalyzer.analyze_incremental: {len(new_edges)} temporal edges")
+        return new_nodes, new_edges
 
 
 class EntityAnalyzer:
@@ -369,6 +537,96 @@ class EntityAnalyzer:
             'Should', 'Might', 'May', 'Can', 'Must', 'Shall'
         }
         return word in common_words
+    
+    def analyze_incremental(
+        self,
+        changed_nodes: List[Node],     # nodes from changed files only
+        all_nodes: List[Node],         # full corpus for lookups
+        existing_edges: List[Edge],    # current graph edges for context
+        changed_files: Set[str]        # set of absolute file paths that changed
+    ) -> Tuple[List[Node], List[Edge]]:
+        """Returns (new_nodes_to_add, new_edges_to_add) for changed files only.
+        Caller has already removed old nodes/edges for changed files.
+        
+        Extract entities from changed_nodes content. Add entity nodes + MENTIONS edges.
+        Scoped to changed_nodes only."""
+        new_nodes = []
+        new_edges = []
+        
+        # Extract entities from changed notes only
+        all_entities = {}
+        entity_counts = Counter()
+        
+        for node in changed_nodes:
+            if node.type != NodeType.NOTE or not node.content:
+                continue
+            
+            entities = set()
+            
+            # Apply entity patterns
+            for entity_type, patterns in self.entity_patterns.items():
+                for pattern in patterns:
+                    matches = re.findall(pattern, node.content)
+                    entities.update(match.strip() for match in matches if len(match.strip()) > 2)
+            
+            # Extract from wikilinks (often entities)
+            wikilinks = re.findall(r'\[\[([^\]]+)\]\]', node.content)
+            for link in wikilinks:
+                if '|' in link:
+                    link = link.split('|')[0]
+                entities.add(link.strip())
+            
+            # Filter out common words
+            entities = {e for e in entities if not self._is_common_word(e)}
+            all_entities[node.id] = entities
+            
+            # Count entity frequencies across changed nodes
+            for entity in entities:
+                entity_counts[entity] += 1
+        
+        # Filter by frequency
+        frequent_entities = {entity for entity, count in entity_counts.items() 
+                           if count >= self.min_frequency}
+        
+        # Create entity nodes
+        entity_node_map = {}
+        for entity in frequent_entities:
+            entity_type = self._classify_entity(entity)
+            entity_id = f"entity_{hashlib.md5(entity.lower().encode()).hexdigest()[:8]}"
+            
+            entity_node = Node(
+                id=entity_id,
+                type=NodeType.ENTITY,
+                title=entity,
+                metadata={
+                    'entity_type': entity_type,
+                    'frequency': entity_counts[entity]
+                }
+            )
+            new_nodes.append(entity_node)
+            entity_node_map[entity] = entity_id
+        
+        # Create entity-note relationships for changed nodes only
+        for node in changed_nodes:
+            if node.type != NodeType.NOTE or node.id not in all_entities:
+                continue
+            
+            for entity in all_entities[node.id]:
+                if entity in entity_node_map:
+                    edge_id = f"mentions_{node.id}_{entity_node_map[entity]}"
+                    edge = Edge(
+                        id=edge_id,
+                        source_id=node.id,
+                        target_id=entity_node_map[entity],
+                        type=RelationType.MENTIONS,
+                        weight=0.6,
+                        confidence=0.8,
+                        metadata={'entity_name': entity}
+                    )
+                    new_edges.append(edge)
+        
+        logger.info(f"EntityAnalyzer.analyze_incremental: {len(new_nodes)} entities, {len(new_edges)} mention edges")
+        return new_nodes, new_edges
 
 
 class GLiNERAnalyzer:
@@ -822,6 +1080,22 @@ class TopicAnalyzer:
                 topics[f"Topic: {word}"] = related_notes
         
         return topics
+    
+    def analyze_incremental(
+        self,
+        changed_nodes: List[Node],     # nodes from changed files only
+        all_nodes: List[Node],         # full corpus for lookups
+        existing_edges: List[Edge],    # current graph edges for context
+        changed_files: Set[str]        # set of absolute file paths that changed
+    ) -> Tuple[List[Node], List[Edge]]:
+        """Returns (new_nodes_to_add, new_edges_to_add) for changed files only.
+        Caller has already removed old nodes/edges for changed files.
+        
+        Full rebuild — acknowledged tradeoff. TF-IDF needs global frequencies.
+        Calls self.analyze(all_nodes) internally. This returns topic nodes + edges
+        for the whole corpus (unchanged from current behavior)."""
+        logger.info("TopicAnalyzer.analyze_incremental: Performing full rebuild (TF-IDF requires global frequencies)")
+        return self.analyze(all_nodes)
 
 
 class SemanticAnalyzer:
@@ -990,6 +1264,197 @@ class SemanticAnalyzer:
         
         logger.info(f"SemanticAnalyzer: {len(new_edges)} similarity edges (FAISS top-{k})")
         return new_nodes, new_edges
+    
+    def analyze_incremental(
+        self,
+        changed_nodes: List[Node],     # nodes from changed files only
+        all_nodes: List[Node],         # full corpus for lookups
+        existing_edges: List[Edge],    # current graph edges for context
+        changed_files: Set[str]        # set of absolute file paths that changed
+    ) -> Tuple[List[Node], List[Edge]]:
+        """Returns (new_nodes_to_add, new_edges_to_add) for changed files only.
+        Caller has already removed old nodes/edges for changed files.
+        
+        Embed changed_nodes using provided embedder (or self.embedder). Search those
+        embeddings against all_nodes embeddings. Return similarity edges for changed
+        files only. Handle the case where embedder is None gracefully."""
+        new_nodes = []
+        new_edges = []
+        
+        if self.embedder is None:
+            logger.warning("SemanticAnalyzer.analyze_incremental: No embedder provided, skipping")
+            return new_nodes, new_edges
+        
+        if not NUMPY_AVAILABLE:
+            logger.warning("NumPy not available, skipping semantic analysis")
+            return new_nodes, new_edges
+        
+        # Get changed note nodes with content
+        changed_note_nodes = [node for node in changed_nodes if node.type == NodeType.NOTE and node.content]
+        if not changed_note_nodes:
+            return new_nodes, new_edges
+        
+        # Get all note nodes for comparison
+        all_note_nodes = [node for node in all_nodes if node.type == NodeType.NOTE and node.content]
+        if len(all_note_nodes) < 2:
+            return new_nodes, new_edges
+        
+        # Embed changed nodes
+        changed_embeddings = []
+        changed_node_ids = []
+        
+        # Ensure model is loaded
+        if self.embedder._model_session is None:
+            self.embedder._load_model()
+        
+        # Use shorter truncation for graph builds
+        original_truncation = self.embedder._tokenizer.truncation
+        self.embedder._tokenizer.enable_truncation(max_length=128)
+        
+        # Embed changed nodes
+        for node in changed_note_nodes:
+            if node.content and len(node.content.strip()) >= 50:
+                try:
+                    emb = self.embedder.embed(node.content)
+                    if emb is not None:
+                        emb = np.array(emb, dtype=np.float32)
+                        if emb.ndim > 1:
+                            emb = emb[0]
+                        changed_embeddings.append(emb)
+                        changed_node_ids.append(node.id)
+                except Exception as e:
+                    logger.warning(f"Failed to embed changed node {node.id}: {e}")
+        
+        if not changed_embeddings:
+            # Restore original truncation
+            if original_truncation:
+                self.embedder._tokenizer.enable_truncation(
+                    max_length=original_truncation.get('max_length', 256))
+            return new_nodes, new_edges
+        
+        # Embed all nodes for comparison
+        all_embeddings = []
+        all_node_ids = []
+        batch_size = 256
+        
+        for i in range(0, len(all_note_nodes), batch_size):
+            batch = all_note_nodes[i:i + batch_size]
+            texts = []
+            ids = []
+            for node in batch:
+                if node.content and len(node.content.strip()) >= 50:
+                    texts.append(node.content)
+                    ids.append(node.id)
+            
+            if not texts:
+                continue
+            
+            try:
+                batch_embeddings = self.embedder.embed(texts)
+                if batch_embeddings.ndim == 1:
+                    batch_embeddings = batch_embeddings.reshape(1, -1)
+                for j, emb in enumerate(batch_embeddings):
+                    all_node_ids.append(ids[j])
+                    all_embeddings.append(np.array(emb, dtype=np.float32))
+            except Exception as e:
+                logger.warning(f"Batch embedding failed in incremental: {e}")
+        
+        # Restore original truncation
+        if original_truncation:
+            self.embedder._tokenizer.enable_truncation(
+                max_length=original_truncation.get('max_length', 256))
+        
+        if len(all_embeddings) < 2:
+            return new_nodes, new_edges
+        
+        # Build FAISS index for all nodes
+        try:
+            import faiss
+        except ImportError:
+            logger.warning("FAISS not available, skipping semantic analysis")
+            return new_nodes, new_edges
+        
+        # Stack embeddings
+        changed_matrix = np.array(changed_embeddings, dtype=np.float32)
+        all_matrix = np.array(all_embeddings, dtype=np.float32)
+        
+        # Normalize for cosine similarity
+        changed_norms = np.linalg.norm(changed_matrix, axis=1, keepdims=True)
+        changed_norms[changed_norms == 0] = 1
+        changed_matrix = changed_matrix / changed_norms
+        
+        all_norms = np.linalg.norm(all_matrix, axis=1, keepdims=True)
+        all_norms[all_norms == 0] = 1
+        all_matrix = all_matrix / all_norms
+        
+        # Build FAISS index with all nodes
+        dims = all_matrix.shape[1]
+        index = faiss.IndexFlatIP(dims)
+        index.add(all_matrix)
+        
+        # Search for neighbors of changed nodes
+        k = min(self.max_edges_per_node + 1, len(all_node_ids))
+        similarities, indices = index.search(changed_matrix, k)
+        
+        # Build edges from changed nodes to their neighbors
+        seen_pairs = set()
+        node_edge_counts = defaultdict(int)
+        
+        for i in range(len(changed_node_ids)):
+            source_id = changed_node_ids[i]
+            if node_edge_counts[source_id] >= self.max_edges_per_node:
+                continue
+            
+            for j_idx in range(k):
+                neighbor_idx = int(indices[i][j_idx])
+                sim = float(similarities[i][j_idx])
+                
+                if neighbor_idx < 0 or neighbor_idx >= len(all_node_ids):
+                    continue
+                
+                target_id = all_node_ids[neighbor_idx]
+                
+                # Skip self
+                if source_id == target_id:
+                    continue
+                
+                if sim < self.threshold:
+                    continue
+                
+                # Deduplicate
+                pair_key = tuple(sorted([source_id, target_id]))
+                if pair_key in seen_pairs:
+                    continue
+                seen_pairs.add(pair_key)
+                
+                if (node_edge_counts[source_id] >= self.max_edges_per_node or
+                    node_edge_counts[target_id] >= self.max_edges_per_node):
+                    continue
+                
+                # Clamp similarity
+                clamped_sim = min(sim, 1.0)
+                
+                edge = Edge(
+                    id=f"semantic_{source_id}_{target_id}",
+                    source_id=source_id,
+                    target_id=target_id,
+                    type=RelationType.SIMILAR_TO,
+                    weight=clamped_sim,
+                    confidence=clamped_sim,
+                    metadata={
+                        'similarity_score': sim,
+                        'analysis_method': 'faiss_cosine_incremental'
+                    }
+                )
+                new_edges.append(edge)
+                node_edge_counts[source_id] += 1
+                node_edge_counts[target_id] += 1
+        
+        # Free memory
+        del index, similarities, indices, changed_matrix, all_matrix
+        
+        logger.info(f"SemanticAnalyzer.analyze_incremental: {len(new_edges)} similarity edges for {len(changed_node_ids)} changed nodes")
+        return new_nodes, new_edges
 
 
 class CentralityAnalyzer:
@@ -1076,3 +1541,29 @@ class CentralityAnalyzer:
                     node = parent[node]
 
         return betweenness
+    
+    def analyze_incremental(
+        self,
+        changed_nodes: List[Node],     # nodes from changed files only
+        all_nodes: List[Node],         # full corpus for lookups
+        existing_edges: List[Edge],    # current graph edges for context
+        changed_files: Set[str]        # set of absolute file paths that changed
+    ) -> Tuple[List[Node], List[Edge]]:
+        """Returns (new_nodes_to_add, new_edges_to_add) for changed files only.
+        Caller has already removed old nodes/edges for changed files.
+        
+        Full recalculation using all existing_edges + new edges will be added after.
+        Calls self.analyze(all_nodes, existing_edges) internally — same as TopicAnalyzer
+        approach. Centrality scores are stored as node metadata, not as new nodes/edges,
+        so we return empty lists."""
+        logger.info("CentralityAnalyzer.analyze_incremental: Performing full recalculation (centrality is global)")
+        # Calculate centrality scores for all nodes
+        importance_scores = self.analyze(all_nodes, existing_edges)
+        # Update node metadata with new centrality scores
+        for node in all_nodes:
+            if node.id in importance_scores:
+                if node.metadata is None:
+                    node.metadata = {}
+                node.metadata['centrality'] = importance_scores[node.id]
+        # CentralityAnalyzer doesn't create new nodes or edges, it just updates metadata
+        return [], []
