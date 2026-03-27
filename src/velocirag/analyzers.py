@@ -829,24 +829,45 @@ class SemanticAnalyzer:
         if len(note_nodes) < 2:
             return new_nodes, new_edges
         
-        # Generate embeddings in batches to limit memory
+        # Generate embeddings in batches — avoids PyTorch buffer fragmentation
+        # from 7K individual embed() calls
         node_ids = []
         embedding_list = []
-        batch_size = 500
+        batch_size = 256
         
         for i in range(0, len(note_nodes), batch_size):
             batch = note_nodes[i:i + batch_size]
+            texts = []
+            ids = []
             for node in batch:
-                try:
-                    embedding = self.embedder.embed(node.content)
-                    if embedding is not None:
-                        emb = np.array(embedding, dtype=np.float32)
-                        if emb.ndim > 1:
-                            emb = emb[0]
-                        node_ids.append(node.id)
-                        embedding_list.append(emb)
-                except Exception as e:
-                    logger.warning(f"Failed to embed {node.id}: {e}")
+                if node.content and node.content.strip():
+                    texts.append(node.content)
+                    ids.append(node.id)
+            
+            if not texts:
+                continue
+            
+            try:
+                batch_embeddings = self.embedder.embed(texts)
+                if batch_embeddings.ndim == 1:
+                    batch_embeddings = batch_embeddings.reshape(1, -1)
+                for j, emb in enumerate(batch_embeddings):
+                    node_ids.append(ids[j])
+                    embedding_list.append(np.array(emb, dtype=np.float32))
+            except Exception as e:
+                logger.warning(f"Batch embedding failed (batch {i//batch_size}): {e}")
+                # Fallback to individual embedding
+                for node in batch:
+                    try:
+                        emb = self.embedder.embed(node.content)
+                        if emb is not None:
+                            emb = np.array(emb, dtype=np.float32)
+                            if emb.ndim > 1:
+                                emb = emb[0]
+                            node_ids.append(node.id)
+                            embedding_list.append(emb)
+                    except Exception:
+                        pass
         
         if len(embedding_list) < 2:
             logger.warning("Not enough embeddings for similarity analysis")

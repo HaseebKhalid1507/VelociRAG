@@ -224,6 +224,10 @@ def index(ctx, path: str, db: Optional[str], source: str, force: bool, graph: bo
         
         # Build graph if requested
         if graph:
+            # Free VectorStore before graph build — reclaims ~1.5GB on large corpora
+            del store
+            import gc; gc.collect()
+            
             click.echo()
             click.echo(f"Building knowledge graph...")
             try:

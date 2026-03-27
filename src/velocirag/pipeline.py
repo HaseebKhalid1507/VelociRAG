@@ -150,6 +150,13 @@ class GraphPipeline:
             # Stage 6: Topic analysis
             self._stage_6_topic_analysis()
             
+            # Free TF-IDF artifacts from Stage 6 before semantic analysis
+            if hasattr(self.topic_analyzer, '_vectorizer'):
+                del self.topic_analyzer._vectorizer
+            if hasattr(self.topic_analyzer, '_kmeans'):
+                del self.topic_analyzer._kmeans
+            import gc; gc.collect()
+            
             # Stage 7: Semantic analysis (if embedder available)
             if self.semantic_analyzer:
                 self._stage_7_semantic_analysis()
