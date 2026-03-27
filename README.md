@@ -2,11 +2,11 @@
 
 **Lightning-fast RAG for AI agents.**
 
-_Four-layer retrieval fusion powered by ONNX Runtime. 54MB install, sub-200ms warm search, no PyTorch. MCP-ready._
+_Four-layer retrieval fusion powered by ONNX Runtime. No PyTorch. Sub-200ms warm search. Incremental graph updates. MCP-ready._
 
 ---
 
-Most RAG solutions either drag in 750MB of PyTorch or limit you to single-layer vector search. VelociRAG gives you four retrieval methods — vector similarity, BM25 keyword matching, knowledge graph traversal, and metadata filtering — fused through reciprocal rank fusion with optional cross-encoder reranking. All running on ONNX Runtime, no GPU, no API keys. Comes with an MCP server for agent integration, a Unix socket daemon for warm queries, and a CLI that just works.
+Most RAG solutions either drag in 2GB+ of PyTorch or limit you to single-layer vector search. VelociRAG gives you four retrieval methods — vector similarity, BM25 keyword matching, knowledge graph traversal, and metadata filtering — fused through reciprocal rank fusion with cross-encoder reranking. All running on ONNX Runtime, no GPU, no API keys. Comes with an MCP server for agent integration, a Unix socket daemon for warm queries, and a CLI that just works.
 
 ## 🚀 Quick Start
 
@@ -60,6 +60,7 @@ Then open `/mcp` in Claude Code and enable the `velocirag` server. If using a vi
 
 ```python
 from velocirag import Embedder, VectorStore, Searcher
+
 embedder = Embedder()
 store = VectorStore('./my-db', embedder)
 store.add_directory('./my-docs')
@@ -93,11 +94,12 @@ The daemon keeps the ONNX model + FAISS index warm over a Unix socket. First que
 | **Search layers** | 4 | 2 | 2 | 1 | 2 |
 | **Cross-encoder reranking** | ✅ | ❌ | ✅ | ❌ | ❌ |
 | **Knowledge graph** | ✅ | ❌ | ✅ | ❌ | ❌ |
+| **Incremental updates** | ✅ | ❌ | ❌ | ❌ | ❌ |
 | **LLM required for search** | ❌ | ⚠️ | ⚠️ | ❌ | ❌ |
 | **MCP server** | ✅ | ❌ | ❌ | ❌ | ✅ |
 | **GPU required** | ❌ | ❌ | ❌ | ❌ | ❌ |
 | **PyTorch required** | ❌ | ✅ | ✅ | ❌ | ❌ |
-| **Install size** | ~54MB | ~750MB+ | ~750MB+ | ~50MB | ~30MB |
+| **Install size** | ~80MB | ~750MB+ | ~750MB+ | ~50MB | ~30MB |
 | **Warm search latency** | ~3ms | — | — | ~50ms | ~200ms |
 
 ## 🏗️ How It Works
@@ -124,12 +126,13 @@ Query → expand (acronyms, variants)
 
 ## ✨ Features
 
-- **ONNX Runtime** — 184ms cold start, 3ms cached. 54MB install — no PyTorch, no GPU
+- **ONNX Runtime** — 184ms cold start, 3ms cached. No PyTorch, no GPU
 - **Four-layer fusion** — FAISS vector similarity + SQLite FTS5 (BM25) + knowledge graph + metadata filtering, merged via reciprocal rank fusion
-- **Cross-encoder reranking** — Optional TinyBERT reranker with score blending (`pip install velocirag[reranker]`)
+- **Cross-encoder reranking** — TinyBERT reranker via ONNX Runtime — included in base install, no PyTorch needed. Downloads ~17MB model on first use
+- **Incremental graph updates** — file-centric provenance tracking detects what changed and only rebuilds affected nodes/edges. Multi-source support with isolated provenance per source
 - **MCP server** — Five tools (search, index, add_document, health, list_sources) for Claude, Cursor, Windsurf
 - **Search daemon** — Unix socket server keeps ONNX model + FAISS index warm between queries
-- **Knowledge graph** — Seven analyzers build entity, temporal, topic, and explicit-link edges from markdown. Optional GLiNER NER. 680 files in 3.8s
+- **Knowledge graph** — Analyzers build entity, temporal, topic, and explicit-link edges from markdown. Optional GLiNER NER. 418 files in 2.1s
 - **Smart chunking** — Header-aware splitting preserves document structure and parent context
 - **Query expansion** — Acronym registry, casing/spacing variants, underscore-aware tokenization
 - **Runs anywhere** — CPU-only, 8GB RAM, no API keys, no external services
@@ -166,7 +169,7 @@ metadata_store = MetadataStore('./search-db/metadata.db')
 # Index with graph + metadata
 store.add_directory('./docs')
 pipeline = GraphPipeline(graph_store, embedder, metadata_store)
-pipeline.build('./docs')
+pipeline.build('./docs', source_name='my-docs')
 
 # Unified search across all layers
 searcher = Searcher(store, embedder)
@@ -190,11 +193,32 @@ searcher = Searcher(store, embedder)
 results = searcher.search('neural networks', limit=10)
 ```
 
+**Incremental graph updates:**
+```python
+from velocirag import Embedder, GraphStore, GraphPipeline
+
+# First run — full build, populates provenance
+gs = GraphStore('./db/graph.db')
+pipeline = GraphPipeline(gs, embedder=Embedder())
+pipeline.build('./docs', source_name='my-docs')  # full build
+
+# Subsequent runs — only changed files get reprocessed
+pipeline.build('./docs', source_name='my-docs')  # incremental (automatic)
+
+# Force full rebuild
+pipeline.build('./docs', source_name='my-docs', force_rebuild=True)
+
+# Multi-source graphs
+pipeline.build('./project-a', source_name='project-a')
+pipeline.build('./project-b', source_name='project-b')  # isolated provenance
+```
+
 ## 💻 CLI Reference
 
 ```bash
-# Index documents with all layers
-velocirag index <path> [--graph] [--metadata] [--gliner] [--light-graph] [--force]
+# Index documents (graph built with light mode by default)
+velocirag index <path> [--graph] [--metadata] [--gliner] [--full-graph] [--force]
+                       [--source NAME] [--db PATH]
 
 # Search across all layers (auto-routes through daemon if running)
 velocirag search <query> [--limit N] [--threshold F] [--format text|json]
@@ -214,21 +238,36 @@ velocirag health [--format text|json]
 velocirag mcp [--db PATH] [--transport stdio|sse]
 ```
 
+**Graph options:**
+- `--graph` — Build knowledge graph (light mode by default, skips semantic similarity)
+- `--full-graph` — Build graph WITH semantic similarity edges (~2GB extra RAM)
+- `--source NAME` — Label for multi-source provenance isolation
+- `--force` — Clear and rebuild from scratch
+
 ## 📊 Performance
 
-Real benchmarks from production deployment (3,416 documents, ONNX Runtime, v0.5.0):
+Real benchmarks on [ByteByteGo/system-design-101](https://github.com/ByteByteGoHq/system-design-101) (418 files, 1,001 chunks):
+
+| Metric | Value |
+|--------|-------|
+| **Index (418 files)** | **13.6s** |
+| **Search (warm, 5 results)** | **35–90ms** |
+| **Graph build (light)** | **2.1s** → 2,397 nodes, 8,717 edges |
+| **Incremental update (1 file)** | **1.3s** |
+| **Reranker** | Cross-encoder TinyBERT via ONNX |
+| **Install size** | ~80MB (no PyTorch) |
+| **RAM usage** | <1GB with all models loaded |
+
+Production deployment (3,400+ documents, 4 sources):
 
 | Metric | Value |
 |--------|-------|
 | **Embedding (warm)** | **3ms** |
 | **Embedding (cold)** | **184ms** |
 | **Full 4-layer search (warm)** | **76–350ms** |
-| **Graph build (680 files, --light-graph)** | **3.8s** |
-| **Graph build (7K files, --light-graph)** | **~90s** (no OOM on 8GB) |
 | **Hit rate (100-query benchmark)** | **99/100** |
-| **Install size** | **~54MB** (no PyTorch) |
-| **RAM usage** | **<1GB** with ONNX models |
-| **Graph** | 4,837 nodes, 11,443 edges |
+| **Graph** | 3,740 nodes, 92,719 edges |
+| **Provenance** | 870 files across 4 sources |
 
 ## ⚙️ Configuration
 
@@ -238,12 +277,16 @@ Real benchmarks from production deployment (3,416 documents, ONNX Runtime, v0.5.
 | `VELOCIRAG_SOCKET` | `/tmp/velocirag-daemon.sock` | Daemon socket path |
 | `NO_COLOR` | — | Disable colored output |
 
-**Dependencies:**
-- **Base:** `onnxruntime`, `tokenizers`, `huggingface-hub`, `faiss-cpu`, `numpy`, `click`
-- **Reranker:** `pip install velocirag[reranker]` (adds sentence-transformers)
-- **MCP:** `pip install velocirag[mcp]` (adds fastmcp)
-- **NER:** `pip install velocirag[ner]` (adds GLiNER)
-- **Graph:** `pip install velocirag[graph]` (adds networkx, scikit-learn)
+**Dependencies (all included in base install):**
+- `onnxruntime` — ONNX inference (embedder + reranker)
+- `tokenizers` + `huggingface-hub` — model loading
+- `faiss-cpu` — vector similarity search
+- `networkx` + `scikit-learn` — knowledge graph + topic clustering
+- `numpy`, `click`, `pyyaml`, `python-frontmatter`
+
+**Optional extras:**
+- `pip install "velocirag[mcp]"` — MCP server (adds `fastmcp`)
+- `pip install "velocirag[ner]"` — GLiNER entity extraction (adds `gliner`, requires PyTorch)
 
 ## 📄 License
 

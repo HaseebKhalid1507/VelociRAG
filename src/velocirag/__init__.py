@@ -1,6 +1,6 @@
 """VelociRAG — Lightning-fast RAG for AI agents."""
 
-__version__ = "0.5.4"
+__version__ = "0.6.0"
 
 from .chunker import chunk_markdown as chunk_markdown
 from .variants import generate_variants as generate_variants
