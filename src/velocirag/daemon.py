@@ -227,7 +227,7 @@ class VelociragDaemon:
             try:
                 self._work_queue.put(holder, timeout=5.0)
             except Exception:
-                self._send_response(conn, {"error": "Server overloaded, try again later"})
+                conn.sendall(self._encode_response({"error": "Server overloaded, try again later"}))
                 return
             
             # Wait for worker to process

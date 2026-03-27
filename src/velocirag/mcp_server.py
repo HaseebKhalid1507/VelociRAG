@@ -279,7 +279,7 @@ def index(directory: str, build_graph: bool = True, extract_metadata: bool = Tru
                     result['graph_edges'] = graph_stats['final_edges']
                     
                     # Re-initialize engine to pick up new graph/metadata
-                    _engine['initialized'] = False
+                    _engine_ready.clear()
                     _init_engine()
                     
             except Exception as e:
