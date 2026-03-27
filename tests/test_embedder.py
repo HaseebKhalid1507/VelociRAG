@@ -22,13 +22,12 @@ class TestEmbedderConstructor:
         assert embedder.cache_dir is None
         assert embedder.cache_size == 10000
         assert embedder.normalize_embeddings is False
-        assert embedder._model is None  # Model not loaded yet
+        assert embedder._model_session is None  # ONNX model not loaded yet
     
     def test_custom_model_name(self):
-        """Custom model name is stored correctly."""
-        embedder = Embedder(model_name="all-mpnet-base-v2")
-        assert embedder.model_name == "all-mpnet-base-v2"
-        assert embedder._model is None  # Still not loaded
+        """Only all-MiniLM-L6-v2 is supported in ONNX implementation."""
+        with pytest.raises(ValueError, match="Currently only 'all-MiniLM-L6-v2' is supported"):
+            Embedder(model_name="all-mpnet-base-v2")
     
     def test_cache_size_validation(self):
         """Cache size must be within valid range."""
@@ -450,17 +449,18 @@ class TestModelInfo:
         assert info['cache_size'] == 1  # One item cached
     
     def test_correct_dimensions_reported(self):
-        """Correct dimensions reported for different models."""
-        # Test with known model dimensions
+        """Correct dimensions reported for supported model."""
+        # Test with the only supported model
         embedder1 = Embedder(model_name="all-MiniLM-L6-v2")
         assert embedder1.get_model_info()['dimensions'] == 384
         
-        embedder2 = Embedder(model_name="all-MiniLM-L12-v2")
-        assert embedder2.get_model_info()['dimensions'] == 384
+        # Unsupported models raise ValueError now
+        with pytest.raises(ValueError, match="Currently only 'all-MiniLM-L6-v2' is supported"):
+            Embedder(model_name="all-MiniLM-L12-v2")
         
-        # Unknown model falls back to 384
-        embedder3 = Embedder(model_name="unknown-model-name")
-        assert embedder3.get_model_info()['dimensions'] == 384
+        # Unknown model also raises ValueError  
+        with pytest.raises(ValueError, match="Currently only 'all-MiniLM-L6-v2' is supported"):
+            Embedder(model_name="unknown-model-name")
 
 
 class TestThreadSafety:

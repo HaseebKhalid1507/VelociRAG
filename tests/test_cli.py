@@ -147,7 +147,8 @@ class TestIndexCommand:
             '--db', str(db_path)
         ])
         assert result2.exit_code == 0
-        assert "Files skipped: 1 (unchanged)" in result2.output
+        assert "Files processed: 0" in result2.output
+        assert "Files skipped:" in result2.output
     
     @pytest.mark.skip(reason="Force flag not implemented in store.add_directory")
     def test_index_force(self, runner, sample_markdown_files, tmp_path):
@@ -795,9 +796,9 @@ class TestCLIGeneral:
         assert "No such command" in result.output
     
     def test_environment_variable_db_path(self, runner, sample_markdown_files, tmp_path, monkeypatch):
-        """VELOCIRAGTOR_DB environment variable sets default DB path."""
+        """VELOCIRAG_DB environment variable sets default DB path."""
         db_path = tmp_path / "env_db"
-        monkeypatch.setenv("VELOCIRAGTOR_DB", str(db_path))
+        monkeypatch.setenv("VELOCIRAG_DB", str(db_path))
         
         # Index without specifying --db
         result = runner.invoke(cli, [

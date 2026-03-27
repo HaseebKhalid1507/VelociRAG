@@ -828,6 +828,10 @@ class VectorStore:
         conn = sqlite3.connect(self.sqlite_path)
         try:
             yield conn
+            conn.commit()  # Ensure changes are committed
+        except Exception:
+            conn.rollback()  # Rollback on error
+            raise
         finally:
             conn.close()
 

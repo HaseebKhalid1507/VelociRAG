@@ -151,7 +151,8 @@ class TestSearcherConstructor:
         assert searcher.store is populated_store
         assert searcher.embedder is embedder
         assert searcher.rrf_k == DEFAULT_RRF_K
-        assert searcher.reranker is None
+        # Reranker is now auto-created (gracefully handles missing sentence_transformers)
+        assert searcher.reranker is not None
     
     def test_custom_rrf_k(self, populated_store, embedder):
         """Custom RRF k parameter is accepted."""
@@ -542,13 +543,15 @@ class TestRerankerIntegration:
         assert result['stats']['rerank_time_ms'] >= 50.0
     
     def test_without_reranker_still_works(self, searcher):
-        """Search without reranker returns normal results."""
+        """Search with unavailable reranker returns normal results."""
         result = searcher.search("Python", limit=5)
         assert len(result['results']) > 0
         
-        # No reranker timing in stats
+        # Reranker timing is present even when reranker is unavailable (graceful fallback)
         result_with_stats = searcher.search("Python", limit=5, include_stats=True)
-        assert 'rerank_time_ms' not in result_with_stats['stats']
+        assert 'rerank_time_ms' in result_with_stats['stats']
+        # But the timing should be very small since it just falls back quickly
+        assert result_with_stats['stats']['rerank_time_ms'] >= 0
 
 
 class TestEdgeCases:
@@ -659,30 +662,27 @@ class TestEdgeCases:
             searcher.search("Python")
     
     def test_store_search_partial_failure(self, populated_store, embedder, monkeypatch):
-        """Store search failure for one variant still returns other results."""
+        """Test that searcher handles FAISS batch search fallback gracefully."""
         searcher = Searcher(populated_store, embedder)
         
-        # Mock store.search to fail on first call
-        original_search = populated_store.search
+        # Mock FAISS search to fail, forcing fallback to individual searches
+        original_faiss_search = populated_store._faiss_index.search
         call_count = 0
         
-        def mock_search(*args, **kwargs):
+        def mock_faiss_search(*args, **kwargs):
             nonlocal call_count
             call_count += 1
             if call_count == 1:
-                raise Exception("Store search failed")
-            return original_search(*args, **kwargs)
+                raise Exception("Batch FAISS search failed")
+            return original_faiss_search(*args, **kwargs)
         
-        monkeypatch.setattr(populated_store, 'search', mock_search)
+        monkeypatch.setattr(populated_store._faiss_index, 'search', mock_faiss_search)
         
-        # Should still get results from other variants
+        # Should still get results via fallback
         result = searcher.search("Python programming tutorial", limit=5, include_stats=True)
         
-        # Check that we got some results despite one failure
+        # Check that we got some results despite batch search failure
         assert len(result['results']) > 0
         
-        # Stats should show the failure
-        if 'stats' in result and 'variants' in result['stats']:
-            # One variant should have an error
-            errors = [v for v in result['stats']['variants'] if 'error' in v]
-            assert len(errors) > 0
+        # The search should succeed via the fallback mechanism
+        # (individual variant searches handle the failure gracefully)

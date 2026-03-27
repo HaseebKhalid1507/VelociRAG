@@ -171,12 +171,15 @@ class GraphPipeline:
             if self.semantic_analyzer and self.semantic_analyzer.embedder:
                 self.semantic_analyzer.embedder._model = None
                 self.semantic_analyzer.embedder._cache.clear()
-            self.semantic_analyzer = None
+            # Don't nullify self.semantic_analyzer - it breaks subsequent builds
+            # self.semantic_analyzer = None
             if self.embedder:
                 self.embedder._model = None
                 self.embedder._cache.clear()
-                self.embedder = None
-            self.topic_analyzer = None
+                # Don't nullify self.embedder - it breaks subsequent builds
+                # self.embedder = None
+            # Don't nullify self.topic_analyzer - it breaks subsequent builds  
+            # self.topic_analyzer = None
             gc.collect()
             logger.info(f"Freed content from {content_freed} nodes + embedder model")
             
@@ -346,13 +349,13 @@ class GraphPipeline:
                             tag_id = tag_row[0]
                         else:
                             tag_id = conn.execute('INSERT INTO tags (name) VALUES (?)', (tag,)).lastrowid
-                        conn.execute('INSERT OR IGNORE INTO document_tags (document_id, tag_id) VALUES (?,?)', (doc_id, tag_id))
+                        conn.execute('INSERT OR IGNORE INTO document_tags (doc_id, tag_id) VALUES (?,?)', (doc_id, tag_id))
                     tags_extracted += len(all_tags)
                 
                 # Add cross-references via shared connection
                 for wiki_link in wiki_links:
                     conn.execute('''
-                        INSERT OR IGNORE INTO cross_refs (source_doc_id, target_ref, ref_type)
+                        INSERT OR IGNORE INTO cross_refs (doc_id, ref_target, ref_type)
                         VALUES (?,?,?)
                     ''', (doc_id, wiki_link, 'wiki_link'))
                     cross_refs_extracted += 1

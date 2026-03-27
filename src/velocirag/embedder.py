@@ -104,6 +104,7 @@ class Embedder:
         self._tokenizer = None
         self._cache = OrderedDict()  # MD5 hash -> embedding list (OrderedDict for O(1) LRU)
         self._cache_lock = threading.Lock()
+        self._model_lock = threading.Lock()  # Protect model loading and usage
         self._new_entries = 0  # Track entries since last save
         
         # Load existing cache
@@ -155,9 +156,10 @@ class Embedder:
                 else:
                     raise ValueError(f"Cannot embed empty text at index {i}")
         
-        # Ensure model is loaded
-        if self._model_session is None:
-            self._load_model()
+        # Ensure model is loaded (thread-safe)
+        with self._model_lock:
+            if self._model_session is None:
+                self._load_model()
         
         # Batch process with caching
         embeddings = self._embed_batch(text_list)
@@ -490,20 +492,22 @@ class Embedder:
         Returns:
             2D numpy array of embeddings
         """
-        # Tokenize
-        encoded = self._tokenizer.encode_batch(texts)
-        
-        # Convert to arrays
-        input_ids = np.array([e.ids for e in encoded], dtype=np.int64)
-        attention_mask = np.array([e.attention_mask for e in encoded], dtype=np.int64)
-        token_type_ids = np.zeros_like(input_ids, dtype=np.int64)
-        
-        # Run ONNX inference
-        outputs = self._model_session.run(None, {
-            "input_ids": input_ids,
-            "attention_mask": attention_mask, 
-            "token_type_ids": token_type_ids
-        })
+        # Thread-safe access to model and tokenizer
+        with self._model_lock:
+            # Tokenize
+            encoded = self._tokenizer.encode_batch(texts)
+            
+            # Convert to arrays
+            input_ids = np.array([e.ids for e in encoded], dtype=np.int64)
+            attention_mask = np.array([e.attention_mask for e in encoded], dtype=np.int64)
+            token_type_ids = np.zeros_like(input_ids, dtype=np.int64)
+            
+            # Run ONNX inference
+            outputs = self._model_session.run(None, {
+                "input_ids": input_ids,
+                "attention_mask": attention_mask, 
+                "token_type_ids": token_type_ids
+            })
         
         # Mean pooling (same as sentence-transformers does)
         token_embeddings = outputs[0]  # (batch, seq_len, hidden_dim)
