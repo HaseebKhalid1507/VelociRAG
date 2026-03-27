@@ -18,6 +18,25 @@ MIN_SECTION_SIZE = 10            # Skip empty sections smaller than this
 H1_SEARCH_WINDOW = 500           # How far to look for h1 headers at start
 
 
+def _sanitize_frontmatter(metadata: dict) -> dict:
+    """Convert non-JSON-serializable frontmatter values (date, datetime) to strings."""
+    import datetime as dt
+    sanitized = {}
+    for key, value in metadata.items():
+        if isinstance(value, (dt.date, dt.datetime)):
+            sanitized[key] = value.isoformat()
+        elif isinstance(value, dict):
+            sanitized[key] = _sanitize_frontmatter(value)
+        elif isinstance(value, list):
+            sanitized[key] = [
+                v.isoformat() if isinstance(v, (dt.date, dt.datetime)) else v
+                for v in value
+            ]
+        else:
+            sanitized[key] = value
+    return sanitized
+
+
 def chunk_markdown(content: str | None, file_path: str = "") -> list[dict]:
     """
     Split markdown content by semantic sections (## and ### headers).
@@ -49,7 +68,7 @@ def chunk_markdown(content: str | None, file_path: str = "") -> list[dict]:
     try:
         post = frontmatter.loads(content)
         body = post.content
-        metadata = post.metadata
+        metadata = _sanitize_frontmatter(post.metadata)
     except (yaml.YAMLError, ValueError, TypeError, KeyError, AttributeError):
         body = content
         metadata = {}
