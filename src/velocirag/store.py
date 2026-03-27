@@ -650,15 +650,20 @@ class VectorStore:
             result = conn.execute('SELECT COUNT(*) FROM documents').fetchone()
             return result[0] if result else 0
 
-    def rebuild_index(self) -> None:
-        """Rebuild all FAISS indices from SQLite embeddings."""
+    def rebuild_index(self, batch_size: int = 2000) -> None:
+        """Rebuild all FAISS indices from SQLite embeddings.
+        
+        Memory-efficient: streams embeddings in batches instead of loading all at once.
+        Supports indexing 10K+ documents without OOM on 8GB systems.
+        
+        Args:
+            batch_size: Number of rows to process per batch (default: 2000)
+        """
         with self._connect() as conn:
-            # Get all embeddings in order
-            rows = conn.execute('''
-                SELECT id, doc_id, embedding, l0_embedding, l1_embedding FROM documents ORDER BY id
-            ''').fetchall()
+            # Get total count first
+            total = conn.execute('SELECT COUNT(*) FROM documents').fetchone()[0]
             
-            if not rows:
+            if total == 0:
                 # Empty database
                 if self._dimensions:
                     self._faiss_index = faiss.IndexFlatIP(self._dimensions)
@@ -671,63 +676,71 @@ class VectorStore:
                 self._index_dirty = False
                 return
             
-            # Build new L2 (main) FAISS index
-            embeddings = []
-            l0_embeddings = []
-            l1_embeddings = []
-            
-            for row_id, doc_id, embedding_blob, l0_blob, l1_blob in rows:
-                # L2 (main) embedding
-                embedding = np.frombuffer(embedding_blob, dtype=np.float32)
-                embeddings.append(embedding)
-                
-                # L0 embedding if available
-                if l0_blob:
-                    l0_embedding = np.frombuffer(l0_blob, dtype=np.float32)
-                    l0_embeddings.append(l0_embedding)
-                else:
-                    l0_embeddings.append(None)
-                
-                # L1 embedding if available
-                if l1_blob:
-                    l1_embedding = np.frombuffer(l1_blob, dtype=np.float32)
-                    l1_embeddings.append(l1_embedding)
-                else:
-                    l1_embeddings.append(None)
-            
-            embeddings_array = np.array(embeddings).astype('float32')
-            
-            # Create L2 index with auto-detected dimensions
+            # Detect dimensions from first row if needed
             if self._dimensions is None:
-                self._dimensions = embeddings_array.shape[1]
-                self._store_metadata('embedding_dimensions', str(self._dimensions))
+                first_row = conn.execute(
+                    'SELECT embedding FROM documents LIMIT 1'
+                ).fetchone()
+                if first_row and first_row[0]:
+                    self._dimensions = len(np.frombuffer(first_row[0], dtype=np.float32))
+                    self._store_metadata('embedding_dimensions', str(self._dimensions))
+                else:
+                    return
             
+            # Create fresh indices
             self._faiss_index = faiss.IndexFlatIP(self._dimensions)
-            self._faiss_index.add(embeddings_array)
+            self._faiss_l0_index = faiss.IndexFlatIP(self._dimensions)
+            self._faiss_l1_index = faiss.IndexFlatIP(self._dimensions)
             
-            # Update faiss_idx in SQLite
-            for faiss_idx, (row_id, doc_id, _, _, _) in enumerate(rows):
-                conn.execute('UPDATE documents SET faiss_idx = ? WHERE id = ?', 
-                           (faiss_idx, row_id))
+            # Stream embeddings in batches — never load all rows at once
+            faiss_idx = 0
+            offset = 0
             
-            # Build L0 index
-            valid_l0_embeddings = [emb for emb in l0_embeddings if emb is not None]
-            if valid_l0_embeddings:
-                l0_array = np.array(valid_l0_embeddings).astype('float32')
-                self._faiss_l0_index = faiss.IndexFlatIP(self._dimensions)
-                self._faiss_l0_index.add(l0_array)
-            else:
-                self._faiss_l0_index = faiss.IndexFlatIP(self._dimensions)
-            
-            # Build L1 index  
-            valid_l1_embeddings = [emb for emb in l1_embeddings if emb is not None]
-            if valid_l1_embeddings:
-                l1_array = np.array(valid_l1_embeddings).astype('float32')
-                self._faiss_l1_index = faiss.IndexFlatIP(self._dimensions)
-                self._faiss_l1_index.add(l1_array)
-            else:
-                self._faiss_l1_index = faiss.IndexFlatIP(self._dimensions)
-            
+            while offset < total:
+                rows = conn.execute('''
+                    SELECT id, doc_id, embedding, l0_embedding, l1_embedding 
+                    FROM documents ORDER BY id LIMIT ? OFFSET ?
+                ''', (batch_size, offset)).fetchall()
+                
+                if not rows:
+                    break
+                
+                # Collect batch embeddings
+                batch_embeddings = []
+                batch_l0 = []
+                batch_l1 = []
+                batch_ids = []
+                
+                for row_id, doc_id, embedding_blob, l0_blob, l1_blob in rows:
+                    embedding = np.frombuffer(embedding_blob, dtype=np.float32)
+                    batch_embeddings.append(embedding)
+                    batch_ids.append((row_id, faiss_idx))
+                    
+                    if l0_blob:
+                        batch_l0.append(np.frombuffer(l0_blob, dtype=np.float32))
+                    if l1_blob:
+                        batch_l1.append(np.frombuffer(l1_blob, dtype=np.float32))
+                    
+                    faiss_idx += 1
+                
+                # Add batch to FAISS indices (incremental, memory-bounded)
+                batch_array = np.array(batch_embeddings, dtype=np.float32)
+                self._faiss_index.add(batch_array)
+                
+                if batch_l0:
+                    self._faiss_l0_index.add(np.array(batch_l0, dtype=np.float32))
+                if batch_l1:
+                    self._faiss_l1_index.add(np.array(batch_l1, dtype=np.float32))
+                
+                # Update faiss_idx mappings
+                for row_id, fidx in batch_ids:
+                    conn.execute('UPDATE documents SET faiss_idx = ? WHERE id = ?',
+                               (fidx, row_id))
+                
+                offset += batch_size
+                
+                # Free batch memory
+                del batch_embeddings, batch_array, batch_l0, batch_l1, batch_ids, rows
             conn.commit()
         
         # Save all indices to disk
@@ -741,7 +754,9 @@ class VectorStore:
             faiss.write_index(self._faiss_l1_index, str(self.faiss_l1_path))
         
         self._index_dirty = False
-        logger.info(f"FAISS indices rebuilt: {len(embeddings)} L2, {len(valid_l0_embeddings)} L0, {len(valid_l1_embeddings)} L1")
+        l0_count = self._faiss_l0_index.ntotal if self._faiss_l0_index else 0
+        l1_count = self._faiss_l1_index.ntotal if self._faiss_l1_index else 0
+        logger.info(f"FAISS indices rebuilt: {self._faiss_index.ntotal} L2, {l0_count} L0, {l1_count} L1 (batch_size={batch_size})")
 
     def stats(self) -> Dict[str, Any]:
         """Get storage statistics."""

@@ -154,6 +154,18 @@ class GraphPipeline:
             if self.semantic_analyzer:
                 self._stage_7_semantic_analysis()
             
+            # Free memory after semantic analysis — content and embedder no longer needed
+            content_freed = 0
+            for node in self.nodes:
+                if node.content:
+                    node.content = None
+                    content_freed += 1
+            if self.embedder:
+                del self.embedder
+                self.embedder = None
+            import gc; gc.collect()
+            logger.info(f"Freed content from {content_freed} nodes + embedder model")
+            
             # Stage 8: Graph processing and optimization
             self._stage_8_graph_processing()
             

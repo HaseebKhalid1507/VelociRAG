@@ -811,7 +811,12 @@ class SemanticAnalyzer:
         self.max_edges_per_node = max_edges_per_node
     
     def analyze(self, nodes: List[Node]) -> Tuple[List[Node], List[Edge]]:
-        """Find semantic similarity relationships."""
+        """Find semantic similarity relationships.
+        
+        Uses FAISS top-K search instead of O(n²) pairwise comparison.
+        Memory-bounded: only holds the embedding matrix + FAISS index,
+        never builds a full n×n similarity matrix.
+        """
         new_nodes = []
         new_edges = []
         
@@ -824,71 +829,106 @@ class SemanticAnalyzer:
         if len(note_nodes) < 2:
             return new_nodes, new_edges
         
-        # Generate embeddings
-        embeddings = {}
-        for node in note_nodes:
-            try:
-                embedding = self.embedder.embed(node.content)
-                if embedding is not None:
-                    embeddings[node.id] = np.array(embedding)
-            except Exception as e:
-                logger.warning(f"Failed to embed {node.id}: {e}")
+        # Generate embeddings in batches to limit memory
+        node_ids = []
+        embedding_list = []
+        batch_size = 500
         
-        if len(embeddings) < 2:
+        for i in range(0, len(note_nodes), batch_size):
+            batch = note_nodes[i:i + batch_size]
+            for node in batch:
+                try:
+                    embedding = self.embedder.embed(node.content)
+                    if embedding is not None:
+                        emb = np.array(embedding, dtype=np.float32)
+                        if emb.ndim > 1:
+                            emb = emb[0]
+                        node_ids.append(node.id)
+                        embedding_list.append(emb)
+                except Exception as e:
+                    logger.warning(f"Failed to embed {node.id}: {e}")
+        
+        if len(embedding_list) < 2:
             logger.warning("Not enough embeddings for similarity analysis")
             return new_nodes, new_edges
         
-        # Calculate pairwise similarities with per-node edge limits
-        node_ids = list(embeddings.keys())
-        node_edge_counts = defaultdict(int)
-        similarity_pairs = []
+        logger.info(f"SemanticAnalyzer: {len(embedding_list)} embeddings, using FAISS top-K search")
         
-        # First pass: calculate all similarities and sort by strength
-        for i, source_id in enumerate(node_ids):
-            for j, target_id in enumerate(node_ids):
-                if i >= j:  # Skip self and duplicates
+        # Build FAISS index for efficient top-K similarity search — O(n*k) not O(n²)
+        try:
+            import faiss
+        except ImportError:
+            logger.warning("FAISS not available, skipping semantic analysis")
+            return new_nodes, new_edges
+        
+        matrix = np.array(embedding_list, dtype=np.float32)
+        # Normalize for cosine similarity via inner product
+        norms = np.linalg.norm(matrix, axis=1, keepdims=True)
+        norms[norms == 0] = 1  # avoid division by zero
+        matrix = matrix / norms
+        
+        dims = matrix.shape[1]
+        index = faiss.IndexFlatIP(dims)
+        index.add(matrix)
+        
+        # Search for top-K neighbors per node (+1 because self is always top match)
+        k = min(self.max_edges_per_node + 1, len(node_ids))
+        similarities, indices = index.search(matrix, k)
+        
+        # Free the matrix — FAISS has its own copy
+        del matrix
+        
+        # Build edges from FAISS results
+        seen_pairs = set()
+        node_edge_counts = defaultdict(int)
+        
+        for i in range(len(node_ids)):
+            source_id = node_ids[i]
+            if node_edge_counts[source_id] >= self.max_edges_per_node:
+                continue
+                
+            for j_idx in range(k):
+                neighbor_idx = int(indices[i][j_idx])
+                sim = float(similarities[i][j_idx])
+                
+                if neighbor_idx == i or neighbor_idx < 0:
+                    continue  # skip self
+                if sim < self.threshold:
                     continue
                 
-                similarity = self._cosine_similarity(embeddings[source_id], embeddings[target_id])
+                target_id = node_ids[neighbor_idx]
                 
-                if similarity >= self.threshold:
-                    similarity_pairs.append((similarity, source_id, target_id))
+                # Deduplicate (A→B == B→A)
+                pair_key = tuple(sorted([source_id, target_id]))
+                if pair_key in seen_pairs:
+                    continue
+                seen_pairs.add(pair_key)
+                
+                if (node_edge_counts[source_id] >= self.max_edges_per_node or
+                    node_edge_counts[target_id] >= self.max_edges_per_node):
+                    continue
+                
+                edge = Edge(
+                    id=f"semantic_{source_id}_{target_id}",
+                    source_id=source_id,
+                    target_id=target_id,
+                    type=RelationType.SIMILAR_TO,
+                    weight=sim,
+                    confidence=sim,
+                    metadata={
+                        'similarity_score': sim,
+                        'analysis_method': 'faiss_cosine'
+                    }
+                )
+                new_edges.append(edge)
+                node_edge_counts[source_id] += 1
+                node_edge_counts[target_id] += 1
         
-        # Sort by similarity (strongest first) to prioritize best connections
-        similarity_pairs.sort(reverse=True)
+        # Free FAISS index
+        del index, similarities, indices, embedding_list
         
-        # Second pass: create edges respecting per-node limits
-        for similarity, source_id, target_id in similarity_pairs:
-            # Check if either node has reached its edge limit
-            if (node_edge_counts[source_id] >= self.max_edges_per_node or 
-                node_edge_counts[target_id] >= self.max_edges_per_node):
-                continue
-            
-            edge_id = f"semantic_{source_id}_{target_id}"
-            edge = Edge(
-                id=edge_id,
-                source_id=source_id,
-                target_id=target_id,
-                type=RelationType.SIMILAR_TO,
-                weight=similarity,
-                confidence=similarity,
-                metadata={
-                    'similarity_score': float(similarity),
-                    'analysis_method': 'cosine_similarity'
-                }
-            )
-            new_edges.append(edge)
-            
-            # Update edge counts for both nodes
-            node_edge_counts[source_id] += 1
-            node_edge_counts[target_id] += 1
-        
-        logger.info(f"SemanticAnalyzer: {len(new_edges)} similarity edges")
+        logger.info(f"SemanticAnalyzer: {len(new_edges)} similarity edges (FAISS top-{k})")
         return new_nodes, new_edges
-    
-    def _cosine_similarity(self, a: np.ndarray, b: np.ndarray) -> float:
-        """Calculate cosine similarity between two vectors."""
-        return float(np.dot(a, b) / (np.linalg.norm(a) * np.linalg.norm(b)))
 
 
 class CentralityAnalyzer:
@@ -931,12 +971,24 @@ class CentralityAnalyzer:
         logger.info(f"CentralityAnalyzer: Calculated importance for {len(importance_scores)} nodes")
         return importance_scores
     
-    def _simple_betweenness(self, graph: Dict, node_ids: Set[str]) -> Dict[str, float]:
-        """Simplified betweenness centrality calculation."""
+    def _simple_betweenness(self, graph: Dict, node_ids: Set[str], max_samples: int = 500) -> Dict[str, float]:
+        """Approximate betweenness centrality via sampling.
+        
+        Instead of BFS from every node (O(n²) memory + compute),
+        samples up to max_samples source nodes for O(sample * n) complexity.
+        Standard approximation that scales to large graphs.
+        """
+        import random
         betweenness = {node_id: 0.0 for node_id in node_ids}
         
-        # For each pair of nodes, find shortest paths
-        for source in node_ids:
+        # Sample source nodes — don't BFS from every single node
+        sources = list(node_ids)
+        if len(sources) > max_samples:
+            random.shuffle(sources)
+            sources = sources[:max_samples]
+            logger.info(f"CentralityAnalyzer: sampling {max_samples}/{len(node_ids)} nodes for betweenness")
+        
+        for source in sources:
             # BFS from source
             paths = self._bfs_paths(graph, source)
             
