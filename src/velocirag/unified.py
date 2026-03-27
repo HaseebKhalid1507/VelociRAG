@@ -1,9 +1,15 @@
 """
-Velocirag Phase 7 Unified Search - True 3-Layer Fusion.
+Velocirag Phase 7 Unified Search - True 4-Layer Fusion.
 
-Revolutionary search orchestration that fuses vector similarity, metadata filtering, 
-and graph discovery into a single ranked result set. Each layer contributes candidates
-independently, then RRF fusion determines the final ranking.
+Revolutionary search orchestration that fuses vector similarity, keyword search (BM25),
+metadata filtering, and graph discovery into a single ranked result set. Each layer 
+contributes candidates independently, then RRF fusion determines the final ranking.
+
+Layers:
+- Vector: Semantic similarity via FAISS and embeddings
+- Keyword: BM25 full-text search via SQLite FTS5
+- Metadata: Structured queries and title matching
+- Graph: Knowledge graph connections and topic discovery
 
 No layer dominates. All layers contribute. True fusion.
 """
@@ -20,6 +26,18 @@ from .metadata import MetadataStore
 from .tracker import UsageTracker
 from .rrf import reciprocal_rank_fusion
 
+# Common stopwords for graph search query filtering
+STOPWORDS = {'the', 'a', 'an', 'is', 'are', 'was', 'were', 'be', 'been', 'being',
+             'have', 'has', 'had', 'do', 'does', 'did', 'will', 'would', 'could',
+             'should', 'may', 'might', 'can', 'shall', 'to', 'of', 'in', 'for',
+             'on', 'with', 'at', 'by', 'from', 'as', 'into', 'about', 'between',
+             'through', 'after', 'before', 'above', 'below', 'up', 'down', 'out',
+             'off', 'over', 'under', 'again', 'further', 'then', 'once', 'here',
+             'there', 'when', 'where', 'why', 'how', 'all', 'each', 'every',
+             'both', 'few', 'more', 'most', 'other', 'some', 'such', 'no', 'not',
+             'only', 'own', 'same', 'so', 'than', 'too', 'very', 'just', 'because',
+             'but', 'and', 'or', 'if', 'while', 'that', 'this', 'what', 'which', 'who'}
+
 logger = logging.getLogger("velocirag.unified")
 
 
@@ -30,11 +48,11 @@ class UnifiedSearchError(Exception):
 
 class UnifiedSearch:
     """
-    Unified search orchestrator with true 3-layer fusion.
+    Unified search orchestrator with true 4-layer fusion.
     
-    The apex predator of search. Combines vector precision, metadata structure,
-    and graph connections through battle-tested RRF fusion. Each layer hunts
-    independently, then they converge on the truth.
+    The apex predator of search. Combines vector precision, keyword relevance,
+    metadata structure, and graph connections through battle-tested RRF fusion. 
+    Each layer hunts independently, then they converge on the truth.
     """
     
     def __init__(self, searcher: Searcher, graph_store: Optional[GraphStore] = None,
@@ -57,6 +75,7 @@ class UnifiedSearch:
         self.graph_querier = GraphQuerier(graph_store) if graph_store else None
         self.metadata_store = metadata_store
         self.tracker = tracker
+        self._filename_cache = None
         
         logger.info(f"UnifiedSearch initialized: vector={True}, graph={bool(graph_store)}, "
                    f"metadata={bool(metadata_store)}, tracker={bool(tracker)}")
@@ -64,14 +83,15 @@ class UnifiedSearch:
     def search(self, query: str, limit: int = 5, threshold: float = 0.3, 
                enrich_graph: bool = True, filters: Optional[Dict] = None) -> Dict[str, Any]:
         """
-        True 3-layer fusion search: vector + metadata + graph → RRF → final results.
+        True 4-layer fusion search: vector + keyword + metadata + graph → RRF → final results.
         
         Revolutionary pipeline:
         1. Layer 1 — Vector: embed query → FAISS → top candidates by cosine similarity
-        2. Layer 2 — Metadata: query SQL → docs matching filters or title text search  
-        3. Layer 3 — Graph: find query in graph → traverse edges → discover connected docs
-        4. RRF Fusion: merge all 3 candidate lists using reciprocal rank fusion
-        5. Load full content for top fused results + graph enrichment
+        2. Layer 2 — Keyword: BM25 FTS5 search → text relevance candidates
+        3. Layer 3 — Metadata: query SQL → docs matching filters or title text search  
+        4. Layer 4 — Graph: find query in graph → traverse edges → discover connected docs
+        5. RRF Fusion: merge all 4 candidate lists using reciprocal rank fusion
+        6. Load full content for top fused results + graph enrichment
         
         Args:
             query: Search query string
@@ -97,6 +117,9 @@ class UnifiedSearch:
         
         query = query.strip()
         layer_stats = {}
+        
+        # Pre-load filename cache for efficient title-to-filename mapping
+        self._load_filename_cache()
         
         # === LAYER 1: VECTOR SEARCH ===
         # Always runs — this is the foundation
@@ -182,17 +205,6 @@ class UnifiedSearch:
                     pass
                 
                 # Strategy 2: Try individual words from query (filtered to avoid N+1 queries)
-                STOPWORDS = {'the', 'a', 'an', 'is', 'are', 'was', 'were', 'be', 'been', 'being',
-                             'have', 'has', 'had', 'do', 'does', 'did', 'will', 'would', 'could',
-                             'should', 'may', 'might', 'can', 'shall', 'to', 'of', 'in', 'for',
-                             'on', 'with', 'at', 'by', 'from', 'as', 'into', 'about', 'between',
-                             'through', 'after', 'before', 'above', 'below', 'up', 'down', 'out',
-                             'off', 'over', 'under', 'again', 'further', 'then', 'once', 'here',
-                             'there', 'when', 'where', 'why', 'how', 'all', 'each', 'every',
-                             'both', 'few', 'more', 'most', 'other', 'some', 'such', 'no', 'not',
-                             'only', 'own', 'same', 'so', 'than', 'too', 'very', 'just', 'because',
-                             'but', 'and', 'or', 'if', 'while', 'that', 'this', 'what', 'which', 'who'}
-
                 query_words = [w for w in query.lower().split() if len(w) > 2 and w not in STOPWORDS][:3]
                 for word in query_words:
                     try:
@@ -534,6 +546,9 @@ class UnifiedSearch:
         if enrichment_errors:
             response['graph_errors'] = enrichment_errors[:3]
         
+        # Invalidate filename cache to keep memory usage low
+        self._filename_cache = None
+        
         return response
     
     def _search_metadata_titles(self, query: str, limit: int) -> List[Dict]:
@@ -593,6 +608,31 @@ class UnifiedSearch:
             logger.warning(f"Metadata title search failed: {e}")
             return []
     
+    def _load_filename_cache(self):
+        """Pre-load filename cache from store. Called once per search."""
+        if self._filename_cache is not None:
+            return
+        if not self.searcher or not hasattr(self.searcher, 'store'):
+            self._filename_cache = {}
+            return
+        try:
+            with self.searcher.store._connect() as conn:
+                rows = conn.execute('''
+                    SELECT DISTINCT json_extract(metadata, '$.file_path') as fp
+                    FROM documents WHERE fp IS NOT NULL
+                ''').fetchall()
+                # Map lowercase stem → full filename
+                self._filename_cache = {}
+                for row in rows:
+                    if row[0]:
+                        from pathlib import Path
+                        p = Path(row[0])
+                        self._filename_cache[p.stem.lower()] = p.name
+                        # Also map the full lowercase name
+                        self._filename_cache[p.name.lower()] = p.name
+        except Exception:
+            self._filename_cache = {}
+    
     def _extract_filename(self, result: Dict) -> str:
         """
         Extract filename from search result for deduplication.
@@ -622,7 +662,7 @@ class UnifiedSearch:
     
     def _title_to_filename(self, title: str) -> str:
         """
-        Convert graph node title to likely filename format.
+        Convert graph node title to likely filename format using cached lookups.
         
         Args:
             title: Node title from graph
@@ -633,24 +673,16 @@ class UnifiedSearch:
         if not title:
             return ''
         cleaned = title.lower().strip()
-        # If it already looks like a filename, return as-is
         if cleaned.endswith(('.md', '.txt', '.rst')):
             return cleaned
-        # Try fuzzy match against stored filenames
-        if hasattr(self, 'searcher') and hasattr(self.searcher, 'store') and self.searcher.store:
-            try:
-                with self.searcher.store._connect() as conn:
-                    row = conn.execute('''
-                        SELECT DISTINCT json_extract(metadata, '$.file_path') as fp
-                        FROM documents 
-                        WHERE LOWER(json_extract(metadata, '$.file_path')) LIKE ?
-                        LIMIT 1
-                    ''', (f'%{cleaned}%',)).fetchone()
-                    if row and row[0]:
-                        from pathlib import Path
-                        return Path(row[0]).name
-            except Exception:
-                pass
+        self._load_filename_cache()
+        # Try exact stem match first
+        if cleaned in self._filename_cache:
+            return self._filename_cache[cleaned]
+        # Try partial match
+        for stem, filename in self._filename_cache.items():
+            if cleaned in stem or stem in cleaned:
+                return filename
         return f"{cleaned}.md"
     
     def _enrich_with_graph(self, result: Dict[str, Any]) -> Dict[str, Any]:

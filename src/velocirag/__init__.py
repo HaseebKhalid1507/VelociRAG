@@ -23,7 +23,6 @@ except ImportError:
     RelationAnalyzer = None
 from .pipeline import GraphPipeline
 from .unified import UnifiedSearch
-from .abstracts import AbstractGenerator, AbstractResult
 from .metadata import MetadataStore
 from .frontmatter import parse_frontmatter, extract_tags_from_content, extract_wiki_links
 from .tracker import UsageTracker
