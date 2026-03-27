@@ -374,6 +374,81 @@ def search(ctx, query: str, db: Optional[str], limit: int,
         click.echo(error("Query cannot be empty"), err=True)
         sys.exit(1)
     
+    # Try daemon first
+    from .daemon import daemon_search
+    result = daemon_search(query, limit=limit, threshold=threshold)
+    if result is not None and 'error' not in result:
+        # Format and display daemon results
+        search_time = result.get('search_time_ms', 0)
+        total_results = result.get('total_results', 0)
+        
+        if output_format == 'json':
+            click.echo(json.dumps(result, indent=2))
+        elif output_format == 'compact':
+            for i, res in enumerate(result.get('results', [])):
+                similarity = res.get('similarity', res.get('score', 0))
+                doc_id = res.get('doc_id', '')
+                click.echo(f"{similarity:.3f}\t{doc_id}")
+        else:
+            if total_results == 0:
+                click.echo(f"Query: \"{query}\"")
+                click.echo(warning(f"No results found in {search_time:.0f}ms [daemon]"))
+                return
+                
+            click.echo(f"Query: \"{query}\"")
+            layer_stats = result.get('layer_stats', {})
+            active_layers = [l for l, s in layer_stats.items() if s.get('candidates', 0) > 0]
+            layers_str = f" [{' + '.join(active_layers)}]" if active_layers else ""
+            
+            click.echo(info(f"Found {total_results} result{'s' if total_results != 1 else ''} in {search_time:.0f}ms [daemon]{layers_str}"))
+            click.echo()
+            
+            # Results
+            for i, res in enumerate(result.get('results', []), 1):
+                similarity = res.get('similarity', res.get('score', 0))
+                doc_id = res.get('doc_id', '')
+                content = res.get('content', res.get('chunk', ''))
+                metadata = res.get('metadata', {})
+                
+                # Similarity score with color coding
+                if similarity >= 0.8:
+                    score_str = success(f"[{similarity:.3f}]")
+                elif similarity >= 0.6:
+                    score_str = warning(f"[{similarity:.3f}]")
+                else:
+                    score_str = f"[{similarity:.3f}]"
+                
+                if metadata.get('_metadata_match'):
+                    score_str += " " + success("✓")
+                
+                file_path = metadata.get('file_path', doc_id)
+                click.echo(f"{i}. {score_str} {file_path}")
+                
+                # Source info
+                info_parts = []
+                rerank = metadata.get('rerank_score')
+                if rerank is not None:
+                    info_parts.append(f"rerank={rerank:.2f}")
+                source_layers = metadata.get('source_layers', '')
+                if source_layers:
+                    info_parts.append(f"via {source_layers}")
+                if metadata.get('found_in_graph'):
+                    connections = metadata.get('graph_connections', [])[:3]
+                    if connections:
+                        info_parts.append(f"→ {', '.join(connections)}")
+                if info_parts:
+                    click.echo(f"   {' | '.join(info_parts)}")
+                
+                # Content preview
+                preview = content[:200].replace('\n', ' ').strip()
+                if len(content) > 200:
+                    preview += "..."
+                click.echo(f"   {preview}")
+                
+                if i < len(result.get('results', [])):
+                    click.echo()
+        return
+
     try:
         # Check if database exists
         if not (db_path / "store.db").exists():
@@ -1374,6 +1449,64 @@ def query(ctx, db: Optional[str], tags: tuple, status: str, category: str,
             import traceback
             traceback.print_exc()
         sys.exit(1)
+
+
+@cli.command()
+@click.option('--db', default=None, help='Database path')
+@click.option('--foreground', '-f', is_flag=True, help="Run in foreground (don't daemonize)")
+def serve(db, foreground):
+    """Start the VelociRAG search daemon."""
+    from .daemon import VelociragDaemon
+    db_path = str(resolve_db_path(db))
+    
+    # Check if database exists
+    if not (Path(db_path) / "store.db").exists():
+        click.echo(error("Database not found. Run 'velocirag index <path>' to create an index."), err=True)
+        sys.exit(1)
+    
+    daemon = VelociragDaemon(db_path)
+    daemon.start(foreground=foreground)
+
+
+@cli.command()
+def stop():
+    """Stop the VelociRAG search daemon."""
+    from .daemon import VelociragDaemon
+    VelociragDaemon.stop_daemon()
+
+
+@cli.command()
+def status():
+    """Check daemon status."""
+    from .daemon import daemon_ping, daemon_health
+    
+    if not daemon_ping():
+        click.echo(error("❌ VelociRAG daemon not running"))
+        return
+    
+    health = daemon_health()
+    if not health:
+        click.echo(error("❌ Daemon not responding"))
+        return
+        
+    if health.get('error'):
+        click.echo(error(f"❌ Daemon error: {health['error']}"))
+        return
+    
+    click.echo(success("✅ VelociRAG daemon running"))
+    click.echo(f"   Uptime: {health.get('uptime_seconds', 0)}s")
+    click.echo(f"   Requests served: {health.get('requests_served', 0)}")
+    click.echo(f"   Documents: {health.get('total_documents', 0)}")
+    click.echo(f"   FAISS vectors: {health.get('faiss_vectors', 0)}")
+    click.echo(f"   Index consistent: {health.get('consistent', False)}")
+    
+    components = health.get('components', {})
+    active_components = [k for k, v in components.items() if v]
+    if active_components:
+        click.echo(f"   Components: {', '.join(active_components)}")
+    
+    if health.get('graph_nodes'):
+        click.echo(f"   Graph: {health['graph_nodes']} nodes, {health.get('graph_edges', 0)} edges")
 
 
 @cli.command()
