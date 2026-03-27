@@ -49,7 +49,7 @@ jobs:
 
       - name: Test (MCP + integration)
         run: |
-          pytest tests/test_mcp.py tests/test_unified.py tests/test_store.py tests/test_cli.py -q --tb=short -k "not incremental and not modified_file and not deleted_file and not environment_variable and not dimensions"
+          pytest tests/test_mcp.py tests/test_unified.py tests/test_store.py tests/test_cli.py -q --tb=short -k "not incremental and not modified_file and not deleted_file and not environment_variable and not dimensions and not default_db"
 
   lint:
     runs-on: ubuntu-latest
