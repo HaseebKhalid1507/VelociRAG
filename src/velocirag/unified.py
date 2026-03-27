@@ -181,22 +181,32 @@ class UnifiedSearch:
                 except Exception:
                     pass
                 
-                # Strategy 2: Try individual words from query
-                query_words = query.lower().split()
+                # Strategy 2: Try individual words from query (filtered to avoid N+1 queries)
+                STOPWORDS = {'the', 'a', 'an', 'is', 'are', 'was', 'were', 'be', 'been', 'being',
+                             'have', 'has', 'had', 'do', 'does', 'did', 'will', 'would', 'could',
+                             'should', 'may', 'might', 'can', 'shall', 'to', 'of', 'in', 'for',
+                             'on', 'with', 'at', 'by', 'from', 'as', 'into', 'about', 'between',
+                             'through', 'after', 'before', 'above', 'below', 'up', 'down', 'out',
+                             'off', 'over', 'under', 'again', 'further', 'then', 'once', 'here',
+                             'there', 'when', 'where', 'why', 'how', 'all', 'each', 'every',
+                             'both', 'few', 'more', 'most', 'other', 'some', 'such', 'no', 'not',
+                             'only', 'own', 'same', 'so', 'than', 'too', 'very', 'just', 'because',
+                             'but', 'and', 'or', 'if', 'while', 'that', 'this', 'what', 'which', 'who'}
+
+                query_words = [w for w in query.lower().split() if len(w) > 2 and w not in STOPWORDS][:3]
                 for word in query_words:
-                    if len(word) > 2:  # Skip very short words
-                        try:
-                            connections = self.graph_querier.find_connections(word, depth=1)
-                            if 'connections_by_type' in connections:
-                                for rel_type, conns in connections['connections_by_type'].items():
-                                    for conn in conns[:2]:  # Limit per word
-                                        graph_candidates.append({
-                                            'title': conn['node'],
-                                            'score': conn.get('weight', 0.3),
-                                            'source': f'word_{word}_{rel_type}'
-                                        })
-                        except Exception:
-                            pass
+                    try:
+                        connections = self.graph_querier.find_connections(word, depth=1)
+                        if 'connections_by_type' in connections:
+                            for rel_type, conns in connections['connections_by_type'].items():
+                                for conn in conns[:2]:  # Limit per word
+                                    graph_candidates.append({
+                                        'title': conn['node'],
+                                        'score': conn.get('weight', 0.3),
+                                        'source': f'word_{word}_{rel_type}'
+                                    })
+                    except Exception:
+                        pass
                 
                 # Strategy 3: Topic web if query looks topical
                 if len(query.split()) <= 3:  # Short queries might be topics
@@ -544,16 +554,22 @@ class UnifiedSearch:
             import sqlite3
             conn = sqlite3.connect(self.metadata_store.db_path)
             try:
-                # Simple title search using LIKE
-                query_pattern = f"%{query}%"
-                cursor = conn.execute('''
+                # Split query into words for better multi-word matching
+                words = [w.strip() for w in query.split() if len(w.strip()) > 2]
+                if not words:
+                    return []
+                where_parts = []
+                params = []
+                for w in words[:5]:  # limit to 5 words
+                    where_parts.append('(title LIKE ? OR filename LIKE ?)')
+                    params.extend([f'%{w}%', f'%{w}%'])
+                where_clause = ' OR '.join(where_parts)
+                cursor = conn.execute(f'''
                     SELECT * FROM documents 
-                    WHERE title LIKE ? OR filename LIKE ?
-                    ORDER BY 
-                        CASE WHEN title LIKE ? THEN 0 ELSE 1 END,
-                        updated_at DESC
+                    WHERE {where_clause}
+                    ORDER BY updated_at DESC 
                     LIMIT ?
-                ''', (query_pattern, query_pattern, query_pattern, limit))
+                ''', params + [limit])
                 
                 rows = cursor.fetchall()
                 columns = [desc[0] for desc in cursor.description]
@@ -616,19 +632,25 @@ class UnifiedSearch:
         """
         if not title:
             return ''
-        
-        # Clean title for filename matching
-        # Common patterns: "python-guide" -> "python-guide.md"
         cleaned = title.lower().strip()
-        
         # If it already looks like a filename, return as-is
-        if '.' in cleaned and cleaned.count('.') == 1:
+        if cleaned.endswith(('.md', '.txt', '.rst')):
             return cleaned
-        
-        # Common extensions to try
-        common_extensions = ['.md', '.txt', '.rst', '.py', '.js', '.html']
-        
-        # Return with .md as most common for notes
+        # Try fuzzy match against stored filenames
+        if hasattr(self, 'searcher') and hasattr(self.searcher, 'store') and self.searcher.store:
+            try:
+                with self.searcher.store._connect() as conn:
+                    row = conn.execute('''
+                        SELECT DISTINCT json_extract(metadata, '$.file_path') as fp
+                        FROM documents 
+                        WHERE LOWER(json_extract(metadata, '$.file_path')) LIKE ?
+                        LIMIT 1
+                    ''', (f'%{cleaned}%',)).fetchone()
+                    if row and row[0]:
+                        from pathlib import Path
+                        return Path(row[0]).name
+            except Exception:
+                pass
         return f"{cleaned}.md"
     
     def _enrich_with_graph(self, result: Dict[str, Any]) -> Dict[str, Any]:

@@ -306,31 +306,72 @@ class Searcher:
             all_results = []
             variant_stats = []
             
-            for i, (variant, embedding) in enumerate(zip(variants, normalized_embeddings)):
-                variant_search_start = time.time()
-                try:
-                    variant_limit = min(limit * VARIANT_SEARCH_MULTIPLIER, MAX_VARIANT_LIMIT)
-                    variant_results = self.store.search(embedding, limit=variant_limit, min_similarity=threshold)
+            # Try batch FAISS search first (performance optimization)
+            try:
+                # Stack all variant embeddings
+                query_matrix = np.array(normalized_embeddings, dtype='float32').reshape(len(normalized_embeddings), -1)
+                variant_limit = min(limit * VARIANT_SEARCH_MULTIPLIER, MAX_VARIANT_LIMIT)
+
+                # Single FAISS batch search
+                similarities, indices = self.store._faiss_index.search(query_matrix, min(variant_limit, self.store._faiss_index.ntotal))
+
+                # Split results per variant and load documents
+                for v_idx in range(len(variants)):
+                    variant_search_start = time.time()
+                    variant_results = []
+                    with self.store._connect() as conn:
+                        for sim, faiss_idx in zip(similarities[v_idx], indices[v_idx]):
+                            if faiss_idx < 0 or sim < threshold:
+                                continue
+                            row = conn.execute('SELECT doc_id, content, metadata FROM documents WHERE faiss_idx = ?', (int(faiss_idx),)).fetchone()
+                            if row:
+                                import json
+                                variant_results.append({
+                                    'doc_id': row[0], 'content': row[1],
+                                    'metadata': json.loads(row[2]) if row[2] else {},
+                                    'similarity': float(sim), 'score': float(sim)
+                                })
                     all_results.append(variant_results)
                     
                     if include_stats:
                         variant_search_time = (time.time() - variant_search_start) * 1000
                         variant_stats.append({
-                            'variant': variant,
+                            'variant': variants[v_idx],
                             'results_found': len(variant_results),
                             'search_time_ms': round(variant_search_time, TIMING_PRECISION)
                         })
+                
+            except Exception as batch_error:
+                logger.warning(f"Batch search failed, falling back to individual searches: {batch_error}")
+                # Fallback to original per-variant loop
+                all_results = []
+                variant_stats = []
+                
+                for i, (variant, embedding) in enumerate(zip(variants, normalized_embeddings)):
+                    variant_search_start = time.time()
+                    try:
+                        variant_limit = min(limit * VARIANT_SEARCH_MULTIPLIER, MAX_VARIANT_LIMIT)
+                        variant_results = self.store.search(embedding, limit=variant_limit, min_similarity=threshold)
+                        all_results.append(variant_results)
                         
-                except Exception as e:
-                    logger.warning(f"Search failed for variant '{variant}': {e}")
-                    all_results.append([])
-                    if include_stats:
-                        variant_stats.append({
-                            'variant': variant,
-                            'results_found': 0,
-                            'search_time_ms': 0.0,
-                            'error': str(e)
-                        })
+                        if include_stats:
+                            variant_search_time = (time.time() - variant_search_start) * 1000
+                            variant_stats.append({
+                                'variant': variant,
+                                'results_found': len(variant_results),
+                                'search_time_ms': round(variant_search_time, TIMING_PRECISION)
+                            })
+                            
+                    except Exception as e:
+                        logger.warning(f"Search failed for variant '{variant}': {e}")
+                        all_results.append([])
+                        if include_stats:
+                            variant_stats.append({
+                                'variant': variant,
+                                'results_found': 0,
+                                'search_time_ms': 0.0,
+                                'error': str(e)
+                            })
             
             search_time = (time.time() - search_start) * 1000
             if include_stats:
@@ -774,13 +815,18 @@ class Searcher:
         # Actual validation (outside lock - I/O bound)
         try:
             stats = self.store.stats()
-            # Simple consistency check - more sophisticated checks can be added
-            is_consistent = stats.get('document_count', 0) >= 0  # Basic sanity check
-            
-            # TODO: Add more sophisticated consistency checks here:
-            # - FAISS index size vs SQLite document count
-            # - Embedding dimension consistency
-            # - Index corruption detection
+            doc_count = stats.get('document_count', 0)
+            faiss_count = stats.get('faiss_vectors', 0)
+            dimensions = stats.get('dimensions')
+
+            # Real consistency checks
+            is_consistent = True
+            if doc_count > 0 and faiss_count > 0 and doc_count != faiss_count:
+                logger.warning(f"Index inconsistency: {doc_count} docs vs {faiss_count} FAISS vectors")
+                is_consistent = False
+            if dimensions is not None and dimensions != 384:  # Expected MiniLM dimensions
+                logger.warning(f"Unexpected embedding dimensions: {dimensions}")
+                is_consistent = False
             
         except Exception as e:
             logger.warning(f"Store consistency check failed: {e}")

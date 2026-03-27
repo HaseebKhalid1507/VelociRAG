@@ -93,7 +93,9 @@ def reciprocal_rank_fusion(
     # Build final result list with RRF scores added to metadata
     fused_results = []
     for doc_id, rrf_score in sorted_docs:
-        result = copy.deepcopy(doc_map[doc_id])
+        result = doc_map[doc_id].copy()
+        if 'metadata' in result:
+            result['metadata'] = result['metadata'].copy()
         
         # Add RRF score to metadata
         if 'metadata' not in result:
