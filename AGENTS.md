@@ -36,23 +36,23 @@ markdown files → chunk → embed (ONNX) → store (SQLite + FAISS)
 
 | Module | Lines | Purpose |
 |--------|-------|---------|
-| `cli.py` | 1524 | Click CLI — index, search, serve, stop, status, mcp, health, query, reindex |
-| `analyzers.py` | 1079 | 7 graph analyzers + FAISS semantic (not O(n²)) + sampled centrality + 128-token truncation. GLiNER NER optional. |
+| `cli.py` | 1526 | Click CLI — index, search, serve, stop, status, mcp, health, query, reindex |
+| `store.py` | 1149 | Vector storage — SQLite + FAISS + FTS5. Batched rebuild, LIKE wildcard escaping. |
+| `analyzers.py` | 1079 | 7 graph analyzers + FAISS semantic (128-token truncation, skip <50 char docs) + sampled centrality. |
 | `graph.py` | 915 | Knowledge graph — Node/Edge models, GraphStore (SQLite), GraphQuerier |
-| `unified.py` | 893 | 4-layer fusion search orchestrator — vector + keyword + metadata + graph → RRF. Filename cache. |
-| `store.py` | 870 | Vector storage — SQLite + FAISS + FTS5. Batched rebuild for large corpora. |
+| `unified.py` | 903 | 4-layer fusion search — vector + keyword + metadata + graph → RRF. Filename cache. Exact-match promotion. |
 | `metadata.py` | 695 | Metadata store — frontmatter, tags, cross-refs, usage tracking |
-| `searcher.py` | 681 | High-level search — query variants, batch FAISS, RRF fusion, caching |
-| `pipeline.py` | 638 | 10-stage graph build pipeline. `--light-graph` skips semantic (3.8s for 680 files). Batched metadata. Memory-safe. |
+| `pipeline.py` | 686 | 10-stage graph build. `--light-graph` skips semantic (3.8s/680 files). Batched metadata. Memory-safe. |
+| `searcher.py` | 681 | High-level search — query variants, batch FAISS, RRF fusion, consistency validation |
 | `embedder.py` | 527 | ONNX Runtime embeddings (all-MiniLM-L6-v2, 384d). 3ms warm, 184ms cold. |
-| `mcp_server.py` | 498 | FastMCP server — 5 tools (search, index, add_document, health, list_sources) |
-| `daemon.py` | 437 | Unix socket search daemon — warm engine, auto-detected by CLI |
+| `mcp_server.py` | 498 | FastMCP server — 5 tools. Thread-safe init, `threading.Event`. |
+| `daemon.py` | 437 | Unix socket search daemon — warm engine, bounded queue, auto-detected by CLI |
 | `tracker.py` | 308 | Usage tracking — search hits, reads, access patterns |
 | `variants.py` | 217 | Query variant generation + acronym registry + question rewrite |
-| `reranker.py` | 186 | Cross-encoder reranking (TinyBERT). Optional: `pip install velocirag[reranker]` |
+| `reranker.py` | 186 | Cross-encoder reranking (TinyBERT). Lazy import. Optional: `pip install velocirag[reranker]` |
 | `frontmatter.py` | 172 | YAML frontmatter parser, tag extraction, wiki-link extraction |
 | `chunker.py` | 158 | Markdown chunking by headers with parent context preservation |
-| `rrf.py` | 145 | Reciprocal Rank Fusion implementation |
+| `rrf.py` | 145 | Reciprocal Rank Fusion — shallow copy in hot path |
 
 ## Key Classes
 

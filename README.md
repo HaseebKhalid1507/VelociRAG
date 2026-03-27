@@ -217,7 +217,7 @@ velocirag mcp [--db PATH] [--transport stdio|sse]
 
 ## 📊 Performance
 
-Real benchmarks from production deployment (3,153 documents, ONNX Runtime):
+Real benchmarks from production deployment (3,416 documents, ONNX Runtime, v0.5.0):
 
 | Metric | Value |
 |--------|-------|
@@ -229,7 +229,7 @@ Real benchmarks from production deployment (3,153 documents, ONNX Runtime):
 | **Hit rate (100-query benchmark)** | **99/100** |
 | **Install size** | **~54MB** (no PyTorch) |
 | **RAM usage** | **<1GB** with ONNX models |
-| **Graph** | 3,478 nodes, 11,834 edges |
+| **Graph** | 4,837 nodes, 11,443 edges |
 
 ## ⚙️ Configuration
 
