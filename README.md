@@ -2,11 +2,11 @@
 
 **Lightning-fast RAG for AI agents.**
 
-_RAG engine, not a RAG framework. 4-layer retrieval fusion in under 3ms. No LLM in the search path. ONNX-powered. MCP-ready._
+_Four-layer retrieval fusion powered by ONNX Runtime. 54MB install, sub-200ms warm search, no PyTorch. MCP-ready._
 
 ---
 
-Every agent framework needs retrieval. Most RAG solutions are heavy orchestration frameworks (LangChain, LlamaIndex) that bundle their own agent loop and drag in 750MB of PyTorch. VelociRAG is the opposite — a **pure retrieval engine** powered by ONNX Runtime. Four-layer fusion (vector + BM25 + graph + metadata), cross-encoder reranking, 3ms warm queries, 54MB install. No torch. No API keys. Just fast search.
+Most RAG solutions either drag in 750MB of PyTorch or limit you to single-layer vector search. VelociRAG gives you four retrieval methods — vector similarity, BM25 keyword matching, knowledge graph traversal, and metadata filtering — fused through reciprocal rank fusion with optional cross-encoder reranking. All running on ONNX Runtime, no GPU, no API keys. Comes with an MCP server for agent integration, a Unix socket daemon for warm queries, and a CLI that just works.
 
 ## 🚀 Quick Start
 
@@ -124,16 +124,15 @@ Query → expand (acronyms, variants)
 
 ## ✨ Features
 
-- **Sub-second search** — 3ms warm embeddings, 180ms full 4-layer fusion via daemon
-- **ONNX Runtime** — No PyTorch, no GPU. 54MB install, 16x faster than sentence-transformers
-- **Four-layer fusion** — Vector + BM25 + graph + metadata → RRF
-- **Cross-encoder reranking** — TinyBERT, optional (`pip install velocirag[reranker]`)
-- **MCP server** — Claude Desktop, Cursor, Windsurf, Claude Code
-- **Search daemon** — Unix socket, warm engine, auto-detected by CLI
-- **Knowledge graph** — 7 analyzers, optional GLiNER NER, 680 files in 3.8s, scales to 7K+
-- **Header-aware markdown chunking** — Preserves document structure
-- **Smart query expansion** — Acronyms, variants, question rewrite
-- **No GPU, no API keys** — Pure CPU, zero external dependencies
+- **ONNX Runtime** — 184ms cold start, 3ms cached. 54MB install — no PyTorch, no GPU
+- **Four-layer fusion** — FAISS vector similarity + SQLite FTS5 (BM25) + knowledge graph + metadata filtering, merged via reciprocal rank fusion
+- **Cross-encoder reranking** — Optional TinyBERT reranker with score blending (`pip install velocirag[reranker]`)
+- **MCP server** — Five tools (search, index, add_document, health, list_sources) for Claude, Cursor, Windsurf
+- **Search daemon** — Unix socket server keeps ONNX model + FAISS index warm between queries
+- **Knowledge graph** — Seven analyzers build entity, temporal, topic, and explicit-link edges from markdown. Optional GLiNER NER. 680 files in 3.8s
+- **Smart chunking** — Header-aware splitting preserves document structure and parent context
+- **Query expansion** — Acronym registry, casing/spacing variants, underscore-aware tokenization
+- **Runs anywhere** — CPU-only, 8GB RAM, no API keys, no external services
 
 ## 🤖 MCP Server
 
@@ -146,7 +145,7 @@ VelociRAG exposes a Model Context Protocol server for seamless agent integration
 - `health` — System diagnostics
 - `list_sources` — Show indexed document sources
 
-Models stay warm after first query. Thread-safe initialization for concurrent access. Compatible with any MCP-enabled agent framework.
+The MCP server process stays alive between queries, so models load once and every subsequent search is warm. Works with any MCP-compatible client.
 
 ## 🐍 Python API
 
@@ -254,4 +253,4 @@ Real benchmarks from production deployment (3,416 documents, ONNX Runtime, v0.5.
 
 ---
 
-_Built for agents who think fast and search faster._
+_Built because every agent deserves a search engine that doesn't need a GPU._
