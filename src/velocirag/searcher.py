@@ -161,7 +161,6 @@ class Searcher:
         # Consistency validation cache - Thread-safe validation state
         self._consistency_cache: Dict[str, tuple[bool, float]] = {}
         self._cache_ttl = CONSISTENCY_TTL
-        self._rebuild_in_progress: Dict[str, bool] = {}
         self._consistency_lock = threading.Lock()
         
     def search(

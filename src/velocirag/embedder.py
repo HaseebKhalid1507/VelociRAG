@@ -350,7 +350,7 @@ class Embedder:
                 
                 # Load ONNX model
                 session_options = ort.SessionOptions()
-                session_options.intra_op_num_threads = os.cpu_count()
+                session_options.intra_op_num_threads = min(os.cpu_count() or 1, 8)
                 session_options.log_severity_level = 3  # Suppress warnings
                 
                 self._model_session = ort.InferenceSession(

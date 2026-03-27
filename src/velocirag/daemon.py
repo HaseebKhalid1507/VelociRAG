@@ -295,9 +295,9 @@ class VelociragDaemon:
             
         server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         server.bind(SOCKET_PATH)
+        os.chmod(SOCKET_PATH, 0o600)  # Owner only — set before listen() to close race window
         server.listen(8)
         server.settimeout(1.0)
-        os.chmod(SOCKET_PATH, 0o600)  # Owner only
         
         self.running = True
         self.start_time = datetime.now()
