@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "velocirag"
 version = "0.5.0"
-description = "Progressive multi-layer RAG engine for markdown knowledge bases"
+description = "Lightning-fast RAG for AI agents. ONNX-powered, 4-layer fusion, MCP server. No PyTorch."
 readme = "README.md"
 license = {text = "MIT"}
 requires-python = ">=3.10"
