@@ -43,7 +43,7 @@ markdown files → chunk → embed (ONNX) → store (SQLite + FAISS)
 | `store.py` | 870 | Vector storage — SQLite + FAISS + FTS5. Batched rebuild for large corpora. |
 | `metadata.py` | 695 | Metadata store — frontmatter, tags, cross-refs, usage tracking |
 | `searcher.py` | 681 | High-level search — query variants, batch FAISS, RRF fusion, caching |
-| `pipeline.py` | 638 | 10-stage graph build pipeline. Memory-safe: frees content + model after Stage 7. |
+| `pipeline.py` | 638 | 10-stage graph build pipeline. `--light-graph` skips semantic (3.8s for 680 files). Batched metadata. Memory-safe. |
 | `embedder.py` | 527 | ONNX Runtime embeddings (all-MiniLM-L6-v2, 384d). 3ms warm, 184ms cold. |
 | `mcp_server.py` | 498 | FastMCP server — 5 tools (search, index, add_document, health, list_sources) |
 | `daemon.py` | 437 | Unix socket search daemon — warm engine, auto-detected by CLI |
@@ -94,7 +94,7 @@ if daemon_ping():
 ## CLI Commands
 
 ```bash
-velocirag index <path> [--db PATH] [--graph] [--metadata] [--gliner] [--force]
+velocirag index <path> [--db PATH] [--graph] [--metadata] [--gliner] [--light-graph] [--force]
 velocirag search <query> [--db PATH] [--limit N] [--threshold F] [--format text|json]
 velocirag serve [--db PATH] [-f]       # start search daemon
 velocirag stop                          # stop daemon
@@ -184,7 +184,7 @@ pytest tests/ -k "not incremental"     # Skip known flaky mtime tests
 - **Embedding backend:** ONNX Runtime via `Embedder()`. Downloads `optimum/all-MiniLM-L6-v2` on first use to `~/.cache/velocirag/models/`. No PyTorch needed.
 - **SQLite connections:** Always use `self._connect()` context manager (properly closes). Never `with sqlite3.connect() as conn:` (leaks FDs in long-running processes).
 - **FTS5 queries:** Strip FTS5 operators, keep Unicode, wrap in quotes. Use try/except — MATCH can throw on syntax.
-- **Graph OOM safety:** SemanticAnalyzer uses FAISS top-K (not O(n²) pairwise). TemporalAnalyzer caps at 50K edges. CentralityAnalyzer samples 500 BFS sources. Pipeline frees content + embedder after Stage 7. VectorStore freed before graph build in CLI.
+- **Graph OOM safety:** SemanticAnalyzer uses FAISS top-K (not O(n²) pairwise). TemporalAnalyzer caps at 50K edges. CentralityAnalyzer samples 500 BFS sources. Pipeline frees content + embedder after Stage 7. VectorStore freed before graph build in CLI. `--light-graph` skips semantic entirely (~2GB savings). Stage 2 metadata batched in single transaction (0.3s vs 4+ min).
 - **Reranker:** Optional dependency. Falls back to unranked results if sentence-transformers not installed.
 - **MCP server:** Thread-safe lazy init with double-checked locking. Logger warnings on component failures (no silent swallowing).
 - **Daemon:** Single worker thread owns SQLite/FAISS. Connection threads submit to queue. Length-prefixed JSON over Unix socket.

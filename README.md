@@ -130,7 +130,7 @@ Query → expand (acronyms, variants)
 - **Cross-encoder reranking** — TinyBERT, optional (`pip install velocirag[reranker]`)
 - **MCP server** — Claude Desktop, Cursor, Windsurf, Claude Code
 - **Search daemon** — Unix socket, warm engine, auto-detected by CLI
-- **Knowledge graph** — 7 analyzers, optional GLiNER NER, scales to 7K+ docs
+- **Knowledge graph** — 7 analyzers, optional GLiNER NER, 680 files in 3.8s, scales to 7K+
 - **Header-aware markdown chunking** — Preserves document structure
 - **Smart query expansion** — Acronyms, variants, question rewrite
 - **No GPU, no API keys** — Pure CPU, zero external dependencies
@@ -195,7 +195,7 @@ results = searcher.search('neural networks', limit=10)
 
 ```bash
 # Index documents with all layers
-velocirag index <path> [--graph] [--metadata] [--gliner] [--force]
+velocirag index <path> [--graph] [--metadata] [--gliner] [--light-graph] [--force]
 
 # Search across all layers (auto-routes through daemon if running)
 velocirag search <query> [--limit N] [--threshold F] [--format text|json]
@@ -217,18 +217,19 @@ velocirag mcp [--db PATH] [--transport stdio|sse]
 
 ## 📊 Performance
 
-Real benchmarks from production deployment (3,357 documents, ONNX Runtime):
+Real benchmarks from production deployment (3,153 documents, ONNX Runtime):
 
 | Metric | Value |
 |--------|-------|
 | **Embedding (warm)** | **3ms** |
 | **Embedding (cold)** | **184ms** |
-| **Full 4-layer search (daemon, warm)** | **~180ms** |
+| **Full 4-layer search (warm)** | **76–350ms** |
+| **Graph build (680 files, --light-graph)** | **3.8s** |
+| **Graph build (7K files, --light-graph)** | **~90s** (no OOM on 8GB) |
 | **Hit rate (100-query benchmark)** | **99/100** |
 | **Install size** | **~54MB** (no PyTorch) |
 | **RAM usage** | **<1GB** with ONNX models |
-| **Graph: 7K docs indexed** | **~90s** (no OOM on 8GB) |
-| **Graph nodes/edges** | 1,336 nodes, 16,818 edges |
+| **Graph** | 3,478 nodes, 11,834 edges |
 
 ## ⚙️ Configuration
 
