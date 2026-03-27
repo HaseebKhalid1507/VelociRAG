@@ -6,6 +6,7 @@ Clean orchestration with proper error handling and progress reporting.
 """
 
 import os
+import json
 import logging
 from collections import defaultdict
 from datetime import datetime
