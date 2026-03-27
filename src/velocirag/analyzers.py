@@ -873,7 +873,7 @@ class SemanticAnalyzer:
             texts = []
             ids = []
             for node in batch:
-                if node.content and node.content.strip():
+                if node.content and len(node.content.strip()) >= 50:
                     texts.append(node.content)
                     ids.append(node.id)
 
