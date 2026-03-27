@@ -14,7 +14,7 @@ import sqlite3
 import time
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 import faiss
 import numpy as np
@@ -217,17 +217,21 @@ class VectorStore:
         
         stats = {
             'files_processed': 0,
-            'files_skipped': 0, 
+            'files_skipped': 0,
             'chunks_added': 0,
             'files_deleted': 0,
             'duration_seconds': 0.0,
-            'errors': []
+            'errors': [],
+            'processed_file_paths': [],   # absolute paths of indexed files
+            'deleted_file_paths': [],      # absolute paths of removed files
         }
         
         # Use batch mode to avoid rebuilding on each file
         with self.batch_mode():
             # Clean up deleted files first
-            stats['files_deleted'] = self._cleanup_deleted_files(path, source_name)
+            deleted_count, deleted_paths = self._cleanup_deleted_files(path, source_name)
+            stats['files_deleted'] = deleted_count
+            stats['deleted_file_paths'] = deleted_paths
             
             # Process all .md files
             for md_file in path.rglob('*.md'):
@@ -307,7 +311,8 @@ class VectorStore:
                     
                     stats['chunks_added'] += len(documents)
                     stats['files_processed'] += 1
-                    
+                    stats['processed_file_paths'].append(str(md_file.resolve()))
+
                     # Update file cache
                     self._update_file_cache(rel_path, mtime, source_name)
                     
@@ -1134,9 +1139,10 @@ class VectorStore:
                 DELETE FROM chunks_fts WHERE doc_id LIKE ? ESCAPE '\\'
             ''', (escaped_prefix + '%',))
 
-    def _cleanup_deleted_files(self, base_path: Path, source_name: str) -> int:
-        """Remove files from index that no longer exist."""
+    def _cleanup_deleted_files(self, base_path: Path, source_name: str) -> Tuple[int, List[str]]:
+        """Remove files from index that no longer exist. Returns (count, deleted_paths)."""
         deleted_count = 0
+        deleted_paths: List[str] = []
         prefix = f"{source_name}::" if source_name else ""
         
         with self._connect() as conn:
@@ -1161,8 +1167,9 @@ class VectorStore:
                     self._remove_file_chunks(Path(rel_path), source_name)
                     conn.execute('DELETE FROM file_cache WHERE cache_key = ?', (cache_key,))
                     deleted_count += 1
+                    deleted_paths.append(str(full_path.resolve()))
         
         if deleted_count > 0:
             self._index_dirty = True
-        
-        return deleted_count
+
+        return deleted_count, deleted_paths

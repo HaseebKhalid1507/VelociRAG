@@ -186,8 +186,8 @@ class Reranker:
         Returns:
             Array of relevance scores (sigmoid-normalized), shape [n_pairs]
         """
-        # Encode all pairs — tokenizer handles [CLS] query [SEP] doc [SEP]
-        encodings = [self._tokenizer.encode(query, doc) for query, doc in pairs]
+        # encode_batch handles padding to uniform length — individual encode() does not
+        encodings = self._tokenizer.encode_batch(pairs)
 
         input_ids = np.array([e.ids for e in encodings], dtype=np.int64)
         attention_mask = np.array([e.attention_mask for e in encodings], dtype=np.int64)
