@@ -393,7 +393,7 @@ class GraphStore:
         self.db_path = Path(db_path)
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         
-        # Initialize database (includes incremental schema)
+        # Initialize database
         self._init_database()
         logger.info(f"GraphStore initialized: {self.db_path}")
     
@@ -450,21 +450,17 @@ class GraphStore:
                     # Node validation happens in __post_init__
                     metadata_json = json.dumps(node.metadata) if node.metadata else "{}"
                     created_at_iso = node.created_at.isoformat() if node.created_at else datetime.now().isoformat()
-                    source_file = node.metadata.get('source_file') if node.metadata else None
-                    source_name = node.metadata.get('source_name') if node.metadata else None
                     
                     conn.execute('''
-                        INSERT OR REPLACE INTO nodes (id, type, title, content, metadata, created_at, source_file, source_name)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                        INSERT OR REPLACE INTO nodes (id, type, title, content, metadata, created_at)
+                        VALUES (?, ?, ?, ?, ?, ?)
                     ''', (
                         node.id,
                         node.type.value,
                         node.title,
                         node.content,
                         metadata_json,
-                        created_at_iso,
-                        source_file,
-                        source_name
+                        created_at_iso
                     ))
                     
         except sqlite3.Error as e:
@@ -528,13 +524,11 @@ class GraphStore:
                 for edge in edges:
                     metadata_json = json.dumps(edge.metadata) if edge.metadata else "{}"
                     created_at_iso = edge.created_at.isoformat() if edge.created_at else datetime.now().isoformat()
-                    source_file = edge.metadata.get('source_file') if edge.metadata else None
-                    source_name = edge.metadata.get('source_name') if edge.metadata else None
                     
                     conn.execute('''
                         INSERT OR REPLACE INTO edges 
-                        (id, source_id, target_id, type, weight, confidence, metadata, created_at, source_file, source_name)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        (id, source_id, target_id, type, weight, confidence, metadata, created_at)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                     ''', (
                         edge.id,
                         edge.source_id,
@@ -543,9 +537,7 @@ class GraphStore:
                         edge.weight,
                         edge.confidence,
                         metadata_json,
-                        created_at_iso,
-                        source_file,
-                        source_name
+                        created_at_iso
                     ))
                     
         except sqlite3.Error as e:
@@ -590,47 +582,6 @@ class GraphStore:
         except sqlite3.Error as e:
             raise GraphStoreError(f"Failed to get node '{node_id}': {e}")
     
-    def get_all_nodes(self) -> List[Node]:
-        """Get all nodes in the graph."""
-        try:
-            nodes = []
-            with self._connect() as conn:
-                rows = conn.execute(
-                    'SELECT id, type, title, content, metadata, created_at FROM nodes'
-                ).fetchall()
-                for row in rows:
-                    id_val, type_val, title, content, metadata_json, created_at_iso = row
-                    metadata = json.loads(metadata_json) if metadata_json else {}
-                    created_at = datetime.fromisoformat(created_at_iso) if created_at_iso else None
-                    nodes.append(Node(
-                        id=id_val, type=NodeType(type_val), title=title,
-                        content=content, metadata=metadata, created_at=created_at
-                    ))
-            return nodes
-        except sqlite3.Error as e:
-            raise GraphStoreError(f"Failed to get all nodes: {e}")
-
-    def get_all_edges(self) -> List[Edge]:
-        """Get all edges in the graph."""
-        try:
-            edges = []
-            with self._connect() as conn:
-                rows = conn.execute(
-                    'SELECT id, source_id, target_id, type, weight, confidence, metadata, created_at FROM edges'
-                ).fetchall()
-                for row in rows:
-                    id_val, src, tgt, type_val, weight, conf, metadata_json, created_at_iso = row
-                    metadata = json.loads(metadata_json) if metadata_json else {}
-                    created_at = datetime.fromisoformat(created_at_iso) if created_at_iso else None
-                    edges.append(Edge(
-                        id=id_val, source_id=src, target_id=tgt,
-                        type=RelationType(type_val), weight=weight, confidence=conf,
-                        metadata=metadata, created_at=created_at
-                    ))
-            return edges
-        except sqlite3.Error as e:
-            raise GraphStoreError(f"Failed to get all edges: {e}")
-
     def get_nodes_by_type(self, node_type: NodeType) -> List[Node]:
         """
         Get all nodes of specific type.
@@ -943,104 +894,11 @@ class GraphStore:
                 conn.execute('CREATE INDEX IF NOT EXISTS idx_edges_target ON edges(target_id)')
                 conn.execute('CREATE INDEX IF NOT EXISTS idx_edges_type ON edges(type)')
                 conn.execute('CREATE INDEX IF NOT EXISTS idx_edges_weight ON edges(weight DESC)')
-
-                # Incremental update schema (idempotent — safe on fresh + existing DBs)
-                conn.execute('''
-                    CREATE TABLE IF NOT EXISTS file_provenance (
-                        id INTEGER PRIMARY KEY AUTOINCREMENT,
-                        file_path TEXT NOT NULL,
-                        source_name TEXT NOT NULL DEFAULT '',
-                        last_modified REAL NOT NULL,
-                        content_hash TEXT,
-                        node_count INTEGER DEFAULT 0,
-                        edge_count INTEGER DEFAULT 0,
-                        indexed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                        UNIQUE(file_path, source_name)
-                    )
-                ''')
-                conn.execute('CREATE INDEX IF NOT EXISTS idx_file_provenance_path ON file_provenance(file_path)')
-                conn.execute('CREATE INDEX IF NOT EXISTS idx_file_provenance_modified ON file_provenance(last_modified)')
-
-                # Add provenance columns to nodes/edges (no-op if already exist)
-                for alter in [
-                    'ALTER TABLE nodes ADD COLUMN source_file TEXT DEFAULT NULL',
-                    'ALTER TABLE nodes ADD COLUMN source_name TEXT DEFAULT NULL',
-                    'ALTER TABLE edges ADD COLUMN source_file TEXT DEFAULT NULL',
-                    'ALTER TABLE edges ADD COLUMN source_name TEXT DEFAULT NULL',
-                ]:
-                    try:
-                        conn.execute(alter)
-                    except sqlite3.OperationalError:
-                        pass  # Column already exists
-
-                conn.execute('CREATE INDEX IF NOT EXISTS idx_nodes_source_file ON nodes(source_file)')
-                conn.execute('CREATE INDEX IF NOT EXISTS idx_edges_source_file ON edges(source_file)')
-
+                
                 conn.commit()
-
+                
         except sqlite3.Error as e:
             raise GraphStoreError(f"Failed to initialize database: {e}")
-    
-    def _migrate_incremental_schema(self) -> None:
-        """Migrate schema for incremental graph updates."""
-        try:
-            with self._transaction() as conn:
-                # Create file_provenance table
-                conn.execute('''
-                    CREATE TABLE IF NOT EXISTS file_provenance (
-                        id INTEGER PRIMARY KEY AUTOINCREMENT,
-                        file_path TEXT NOT NULL,
-                        source_name TEXT NOT NULL DEFAULT '',
-                        last_modified REAL NOT NULL,
-                        content_hash TEXT,
-                        node_count INTEGER DEFAULT 0,
-                        edge_count INTEGER DEFAULT 0,
-                        indexed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                        UNIQUE(file_path, source_name)
-                    )
-                ''')
-                
-                # Create indices for file_provenance
-                conn.execute('CREATE INDEX IF NOT EXISTS idx_file_provenance_path ON file_provenance(file_path)')
-                conn.execute('CREATE INDEX IF NOT EXISTS idx_file_provenance_modified ON file_provenance(last_modified)')
-                
-                # Add source_file and source_name columns to nodes if they don't exist
-                try:
-                    conn.execute('ALTER TABLE nodes ADD COLUMN source_file TEXT DEFAULT NULL')
-                except sqlite3.OperationalError:
-                    pass  # Column already exists
-                
-                try:
-                    conn.execute('ALTER TABLE nodes ADD COLUMN source_name TEXT DEFAULT NULL')
-                except sqlite3.OperationalError:
-                    pass  # Column already exists
-                
-                # Add source_file and source_name columns to edges if they don't exist
-                try:
-                    conn.execute('ALTER TABLE edges ADD COLUMN source_file TEXT DEFAULT NULL')
-                except sqlite3.OperationalError:
-                    pass  # Column already exists
-                
-                try:
-                    conn.execute('ALTER TABLE edges ADD COLUMN source_name TEXT DEFAULT NULL')
-                except sqlite3.OperationalError:
-                    pass  # Column already exists
-                
-                # Create indices for the new columns
-                conn.execute('CREATE INDEX IF NOT EXISTS idx_nodes_source_file ON nodes(source_file)')
-                conn.execute('CREATE INDEX IF NOT EXISTS idx_edges_source_file ON edges(source_file)')
-                
-        except sqlite3.Error as e:
-            raise GraphStoreError(f"Failed to migrate incremental schema: {e}")
-    
-    def _provenance_exists(self) -> bool:
-        """Check if file provenance table has any entries."""
-        try:
-            with self._connect() as conn:
-                count = conn.execute('SELECT COUNT(*) FROM file_provenance').fetchone()[0]
-                return count > 0
-        except sqlite3.Error:
-            return False
     
     @contextmanager
     def _transaction(self):
