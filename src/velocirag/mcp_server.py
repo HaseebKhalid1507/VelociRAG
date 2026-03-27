@@ -15,6 +15,7 @@ Five core tools:
 import os
 import time
 import logging
+import threading
 from pathlib import Path
 from typing import Optional, Dict, Any, List
 
@@ -26,8 +27,11 @@ os.environ.setdefault('HF_HUB_DISABLE_PROGRESS_BARS', '1')
 logging.getLogger('transformers').setLevel(logging.ERROR)
 logging.getLogger('sentence_transformers').setLevel(logging.ERROR)
 
+logger = logging.getLogger("velocirag.mcp")
+
 # Global engine state for lazy initialization
 _engine: Dict[str, Any] = {}
+_engine_lock = threading.Lock()
 
 def _get_db_path() -> Path:
     """Get database path from environment or default."""
@@ -37,54 +41,64 @@ def _get_db_path() -> Path:
     return Path('.velocirag').absolute()
 
 def _init_engine() -> None:
-    """Lazily initialize the Velocirag engine on first use."""
+    """Lazily initialize the Velocirag engine on first use. Thread-safe."""
     if _engine.get('initialized'):
         return
     
-    from .embedder import Embedder
-    from .store import VectorStore
-    from .searcher import Searcher
-    from .unified import UnifiedSearch
-    from .graph import GraphStore
-    from .metadata import MetadataStore
-    from .pipeline import GraphPipeline
-    
-    db_path = _get_db_path()
-    db_path.mkdir(parents=True, exist_ok=True)
-    
-    # Core components
-    _engine['db_path'] = db_path
-    _engine['embedder'] = Embedder()
-    _engine['store'] = VectorStore(str(db_path), _engine['embedder'])
-    _engine['searcher'] = Searcher(_engine['store'], _engine['embedder'])
-    
-    # Optional components (check if databases exist)
-    graph_db = db_path / "graph.db"
-    metadata_db = db_path / "metadata.db"
-    
-    _engine['graph_store'] = None
-    _engine['metadata_store'] = None
-    
-    if graph_db.exists():
-        try:
-            _engine['graph_store'] = GraphStore(str(graph_db))
-        except Exception:
-            pass  # Graceful degradation
-    
-    if metadata_db.exists():
-        try:
-            _engine['metadata_store'] = MetadataStore(str(metadata_db))
-        except Exception:
-            pass  # Graceful degradation
-    
-    # Initialize unified search
-    _engine['unified_search'] = UnifiedSearch(
-        searcher=_engine['searcher'],
-        graph_store=_engine['graph_store'],
-        metadata_store=_engine['metadata_store']
-    )
-    
-    _engine['initialized'] = True
+    with _engine_lock:
+        # Double-check after acquiring lock (prevents race condition on SSE transport)
+        if _engine.get('initialized'):
+            return
+        
+        logger.info("Initializing VelociRAG engine...")
+        
+        from .embedder import Embedder
+        from .store import VectorStore
+        from .searcher import Searcher
+        from .unified import UnifiedSearch
+        from .graph import GraphStore
+        from .metadata import MetadataStore
+        from .pipeline import GraphPipeline
+        
+        db_path = _get_db_path()
+        db_path.mkdir(parents=True, exist_ok=True)
+        
+        # Core components
+        _engine['db_path'] = db_path
+        _engine['embedder'] = Embedder()
+        _engine['store'] = VectorStore(str(db_path), _engine['embedder'])
+        _engine['searcher'] = Searcher(_engine['store'], _engine['embedder'])
+        
+        # Optional components (check if databases exist)
+        graph_db = db_path / "graph.db"
+        metadata_db = db_path / "metadata.db"
+        
+        _engine['graph_store'] = None
+        _engine['metadata_store'] = None
+        
+        if graph_db.exists():
+            try:
+                _engine['graph_store'] = GraphStore(str(graph_db))
+            except Exception as e:
+                logger.warning(f"Graph store failed to load ({graph_db}): {e}")
+        
+        if metadata_db.exists():
+            try:
+                _engine['metadata_store'] = MetadataStore(str(metadata_db))
+            except Exception as e:
+                logger.warning(f"Metadata store failed to load ({metadata_db}): {e}")
+        
+        # Initialize unified search
+        _engine['unified_search'] = UnifiedSearch(
+            searcher=_engine['searcher'],
+            graph_store=_engine['graph_store'],
+            metadata_store=_engine['metadata_store']
+        )
+        
+        _engine['initialized'] = True
+        logger.info(f"VelociRAG engine ready — {_engine['store'].count()} docs, "
+                    f"graph={'yes' if _engine['graph_store'] else 'no'}, "
+                    f"metadata={'yes' if _engine['metadata_store'] else 'no'}")
 
 # FastMCP server instance
 mcp = FastMCP(

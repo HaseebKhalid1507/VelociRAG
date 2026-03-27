@@ -470,21 +470,17 @@ class VectorStore:
             if not query or not query.strip():
                 return []
             
-            # Escape for FTS5: wrap each word in quotes to prevent syntax issues
-            # FTS5 special chars: *, ^, (, ), -, AND, OR, NOT, NEAR, \, :, {, }
+            # Escape for FTS5: strip FTS5 operators, keep Unicode, wrap in quotes
+            # FTS5 special chars: * ^ ( ) - \ : { } [ ] AND OR NOT NEAR
+            FTS5_STRIP = set('"\'\\(){}[]*^:~@#$%&|<>!')
             words = query.strip().split()
             safe_tokens = []
-            # Define safe characters - alphanumeric, spaces, and basic punctuation
-            SAFE_CHARS = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789 ._-"
             
             for word in words:
-                # Strip/escape all FTS5 special characters
-                cleaned = word.replace('"', '').replace("'", "").replace('\\', '')
-                cleaned = cleaned.replace('(', '').replace(')', '').replace(':', '')
-                cleaned = cleaned.replace('{', '').replace('}', '').replace('*', '')
-                cleaned = cleaned.replace('^', '').replace('-', '').replace('[', '').replace(']', '')
-                # Filter to only safe characters
-                cleaned = ''.join(c for c in cleaned if c in SAFE_CHARS)
+                # Strip only FTS5 special characters — keep Unicode, digits, letters
+                cleaned = ''.join(c for c in word if c not in FTS5_STRIP)
+                # Also strip leading/trailing hyphens (FTS5 NOT operator)
+                cleaned = cleaned.strip('-')
                 if cleaned and cleaned.strip():
                     safe_tokens.append(f'"{cleaned.strip()}"')
             
