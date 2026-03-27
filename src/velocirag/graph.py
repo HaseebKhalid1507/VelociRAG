@@ -9,7 +9,6 @@ bulletproof consistency guarantees and transaction safety.
 import json
 import logging
 import sqlite3
-import hashlib
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime
