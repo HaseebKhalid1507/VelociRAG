@@ -832,12 +832,11 @@ class GraphPipeline:
         
         # Step 2: Find cross-file edges pointing TO owned nodes (while nodes still exist)
         dependent_rows = conn.execute(f'''
-            SELECT DISTINCT e.source_file
-            FROM edges e
-            JOIN nodes n ON e.source_id = n.id
-            WHERE e.target_id IN ({placeholders})
-              AND (e.source_file != ? OR e.source_file IS NULL)
-              AND e.source_file IS NOT NULL
+            SELECT DISTINCT source_file
+            FROM edges
+            WHERE target_id IN ({placeholders})
+              AND (source_file != ? OR source_file IS NULL)
+              AND source_file IS NOT NULL
         ''', owned_node_ids + [abs_path]).fetchall()
         dependent_files = [row[0] for row in dependent_rows if row[0]]
         

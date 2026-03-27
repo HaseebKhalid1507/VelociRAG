@@ -10,6 +10,7 @@ Fixed version addressing performance issues:
 
 import json
 import logging
+import os
 import sqlite3
 import time
 from contextlib import contextmanager
@@ -761,13 +762,34 @@ class VectorStore:
         
         # Save all indices to disk
         if self._faiss_index and self._faiss_index.ntotal > 0:
-            faiss.write_index(self._faiss_index, str(self.faiss_path))
+            temp_path = str(self.faiss_path) + '.tmp'
+            try:
+                faiss.write_index(self._faiss_index, temp_path)
+                os.replace(temp_path, str(self.faiss_path))
+            except Exception:
+                if os.path.exists(temp_path):
+                    os.remove(temp_path)
+                raise
         
         if self._faiss_l0_index and self._faiss_l0_index.ntotal > 0:
-            faiss.write_index(self._faiss_l0_index, str(self.faiss_l0_path))
+            temp_path = str(self.faiss_l0_path) + '.tmp'
+            try:
+                faiss.write_index(self._faiss_l0_index, temp_path)
+                os.replace(temp_path, str(self.faiss_l0_path))
+            except Exception:
+                if os.path.exists(temp_path):
+                    os.remove(temp_path)
+                raise
         
         if self._faiss_l1_index and self._faiss_l1_index.ntotal > 0:
-            faiss.write_index(self._faiss_l1_index, str(self.faiss_l1_path))
+            temp_path = str(self.faiss_l1_path) + '.tmp'
+            try:
+                faiss.write_index(self._faiss_l1_index, temp_path)
+                os.replace(temp_path, str(self.faiss_l1_path))
+            except Exception:
+                if os.path.exists(temp_path):
+                    os.remove(temp_path)
+                raise
         
         self._index_dirty = False
         self._store_metadata('index_format_version', str(INDEX_FORMAT_VERSION))

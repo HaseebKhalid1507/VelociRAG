@@ -134,18 +134,19 @@ def cli(ctx, verbose: bool):
               help='Source identifier for this content')
 @click.option('--force', '-f', is_flag=True,
               help='Force reindex all files (ignore mtime cache)')
-@click.option('--graph', '-g', is_flag=True,
-              help='Build knowledge graph during indexing')
-@click.option('--metadata', '-m', is_flag=True,
-              help='Extract metadata from frontmatter and content')
+@click.option('--no-graph', is_flag=True,
+              help='Skip knowledge graph build')
+@click.option('--no-metadata', is_flag=True,
+              help='Skip metadata extraction')
 @click.option('--gliner', is_flag=True,
               help='Use GLiNER encoder model for entity extraction (requires pip install velocirag[ner])')
-@click.option('--light-graph', is_flag=True, hidden=True,
-              help='(Deprecated — now default) Build graph without semantic similarity')
 @click.option('--full-graph', is_flag=True,
               help='Build graph WITH semantic similarity edges (uses ~2GB extra RAM)')
+@click.option('--graph', '-g', is_flag=True, hidden=True, help='(Deprecated — graph is now default)')
+@click.option('--metadata', '-m', is_flag=True, hidden=True, help='(Deprecated — metadata is now default)')
+@click.option('--light-graph', is_flag=True, hidden=True, help='(Deprecated — light graph is now default)')
 @click.pass_context
-def index(ctx, path: str, db: Optional[str], source: str, force: bool, graph: bool, metadata: bool, gliner: bool, light_graph: bool, full_graph: bool):
+def index(ctx, path: str, db: Optional[str], source: str, force: bool, no_graph: bool, no_metadata: bool, gliner: bool, full_graph: bool, graph: bool, metadata: bool, light_graph: bool):
     """
     Index a directory of markdown files.
     
@@ -226,8 +227,8 @@ def index(ctx, path: str, db: Optional[str], source: str, force: bool, graph: bo
             if len(stats['errors']) > 5:
                 click.echo(f"  ... and {len(stats['errors']) - 5} more")
         
-        # Build graph if requested
-        if graph:
+        # Build graph (default — skip with --no-graph)
+        if not no_graph:
             # Free VectorStore + embedder before graph build — reclaims ~2GB on large corpora
             # The pipeline will create its own embedder for semantic analysis
             del store
@@ -245,7 +246,7 @@ def index(ctx, path: str, db: Optional[str], source: str, force: bool, graph: bo
                 graph_store = GraphStore(str(graph_db))
 
                 metadata_store_obj = None
-                if metadata:
+                if not no_metadata:
                     metadata_db = db_path / "metadata.db"
                     metadata_store_obj = MetadataStore(str(metadata_db))
 
@@ -266,7 +267,7 @@ def index(ctx, path: str, db: Optional[str], source: str, force: bool, graph: bo
                     click.echo(f"  Edges: {graph_stats['final_edges']}")
                     click.echo(f"  Time: {graph_stats['duration_seconds']:.1f}s")
                     
-                    if metadata and 'metadata' in graph_stats.get('stages', {}):
+                    if not no_metadata and 'metadata' in graph_stats.get('stages', {}):
                         meta_stats = graph_stats['stages']['metadata']
                         click.echo()
                         click.echo(success("Metadata extraction:"))
@@ -282,8 +283,8 @@ def index(ctx, path: str, db: Optional[str], source: str, force: bool, graph: bo
                     import traceback
                     traceback.print_exc()
         
-        # Extract metadata without graph if requested
-        elif metadata:
+        # Extract metadata without graph (when --no-graph but not --no-metadata)
+        elif not no_metadata:
             click.echo()
             click.echo("Extracting metadata...")
             try:

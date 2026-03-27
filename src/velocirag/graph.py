@@ -163,9 +163,10 @@ class GraphQuerier:
         target_node = None
         try:
             with self._connect() as conn:
+                escaped = node_title.replace('\\', '\\\\').replace('%', '\\%').replace('_', '\\_')
                 row = conn.execute('''
-                    SELECT id FROM nodes WHERE title LIKE ? LIMIT 1
-                ''', (f'%{node_title}%',)).fetchone()
+                    SELECT id FROM nodes WHERE title LIKE ? ESCAPE '\\'
+                ''', (f'%{escaped}%',)).fetchone()
                 
                 if row:
                     target_node = self.store.get_node(row[0])
@@ -298,9 +299,10 @@ class GraphQuerier:
             topic_nodes = []
             with self._connect() as conn:
                 # Find topic node
+                escaped = topic.replace('\\', '\\\\').replace('%', '\\%').replace('_', '\\_')
                 topic_row = conn.execute('''
-                    SELECT id FROM nodes WHERE type = ? AND title LIKE ?
-                ''', (NodeType.TOPIC.value, f'%{topic}%')).fetchone()
+                    SELECT id FROM nodes WHERE type = ? AND title LIKE ? ESCAPE '\\'
+                ''', (NodeType.TOPIC.value, f'%{escaped}%')).fetchone()
                 
                 if not topic_row:
                     return {'error': f"Topic '{topic}' not found"}
@@ -1048,7 +1050,7 @@ class GraphStore:
         conn = sqlite3.connect(self.db_path)
         try:
             conn.execute('PRAGMA foreign_keys = ON')
-            conn.execute('BEGIN')
+            conn.execute('BEGIN IMMEDIATE')
             yield conn
             conn.commit()
         except Exception:

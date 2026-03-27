@@ -14,7 +14,7 @@ Most RAG solutions either drag in 2GB+ of PyTorch or limit you to single-layer v
 
 ```bash
 pip install "velocirag[mcp]"
-velocirag index ./my-docs --graph --metadata
+velocirag index ./my-docs
 velocirag mcp
 ```
 
@@ -72,7 +72,7 @@ results = searcher.search('query', limit=5)
 
 ```bash
 pip install velocirag
-velocirag index ./my-docs --graph --metadata
+velocirag index ./my-docs
 velocirag search "your query here"
 ```
 
@@ -216,8 +216,8 @@ pipeline.build('./project-b', source_name='project-b')  # isolated provenance
 ## 💻 CLI Reference
 
 ```bash
-# Index documents (graph built with light mode by default)
-velocirag index <path> [--graph] [--metadata] [--gliner] [--full-graph] [--force]
+# Index documents (graph + metadata built by default)
+velocirag index <path> [--no-graph] [--no-metadata] [--gliner] [--full-graph] [--force]
                        [--source NAME] [--db PATH]
 
 # Search across all layers (auto-routes through daemon if running)
@@ -238,11 +238,13 @@ velocirag health [--format text|json]
 velocirag mcp [--db PATH] [--transport stdio|sse]
 ```
 
-**Graph options:**
-- `--graph` — Build knowledge graph (light mode by default, skips semantic similarity)
+**Options:**
+- `--no-graph` — Skip knowledge graph build
+- `--no-metadata` — Skip metadata extraction
 - `--full-graph` — Build graph WITH semantic similarity edges (~2GB extra RAM)
 - `--source NAME` — Label for multi-source provenance isolation
 - `--force` — Clear and rebuild from scratch
+- `--gliner` — Use GLiNER for entity extraction (requires `pip install "velocirag[ner]"`)
 
 ## 📊 Performance
 

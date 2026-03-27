@@ -279,12 +279,23 @@ class VelociragDaemon:
             os.dup2(devnull.fileno(), sys.stdin.fileno())
             os.dup2(devnull.fileno(), sys.stdout.fileno())
             os.dup2(devnull.fileno(), sys.stderr.fileno())
+            devnull.close()
         
         # Start serving
         self._serve()
         
     def _serve(self):
         """Main server loop."""
+        # Check for stale PID file
+        if os.path.exists(PID_FILE):
+            try:
+                with open(PID_FILE) as f:
+                    old_pid = int(f.read().strip())
+                os.kill(old_pid, 0)  # Check if alive
+                # If we get here, old daemon is still running
+            except (ProcessLookupError, ValueError, FileNotFoundError):
+                os.unlink(PID_FILE)  # Stale PID, remove it
+        
         # Write PID file
         with open(PID_FILE, 'w') as f:
             f.write(str(os.getpid()))
