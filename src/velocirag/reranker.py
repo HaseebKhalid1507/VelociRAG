@@ -3,12 +3,19 @@ Cross-encoder reranking for Velocirag.
 
 Uses sentence-transformers CrossEncoder for optimized relevance scoring
 of query-document pairs. Provides smart document excerpting and graceful
-degradation when models fail to load.
+degradation when models fail to load. Requires optional 'reranker' dependency.
 """
 
 import logging
 import warnings
 from typing import Dict, List, Any
+
+# Optional sentence-transformers dependency
+try:
+    from sentence_transformers import CrossEncoder
+    HAS_CROSS_ENCODER = True
+except ImportError:
+    HAS_CROSS_ENCODER = False
 
 # Constants
 DEFAULT_MODEL = "cross-encoder/ms-marco-TinyBERT-L-2-v2"
@@ -119,6 +126,12 @@ class Reranker:
         if self._loaded or self._load_error:
             return
         
+        # Check if sentence-transformers is available
+        if not HAS_CROSS_ENCODER:
+            self._load_error = "sentence-transformers not installed (install with: pip install velocirag[reranker])"
+            logger.warning(f"Cross-encoder unavailable: {self._load_error}")
+            return
+        
         try:
             logger.info(f"Loading cross-encoder model: {self.model_name}")
             
@@ -132,7 +145,6 @@ class Reranker:
                 st_logger.setLevel(logging.CRITICAL)
                 
                 try:
-                    from sentence_transformers import CrossEncoder
                     self._model = CrossEncoder(self.model_name)
                     self._loaded = True
                     logger.info(f"Cross-encoder model loaded: {self.model_name}")

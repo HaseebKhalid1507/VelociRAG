@@ -27,13 +27,18 @@ classifiers = [
 dependencies = [
     "numpy>=1.24",
     "faiss-cpu>=1.7.4",
-    "sentence-transformers>=2.2",
+    "onnxruntime>=1.14",
+    "tokenizers>=0.13",
+    "huggingface-hub>=0.14",
     "python-frontmatter>=1.0",
     "pyyaml>=6.0",
     "click>=8.0",
 ]
 
 [project.optional-dependencies]
+reranker = [
+    "sentence-transformers>=2.2",
+]
 graph = [
     "networkx>=3.0",
     "scikit-learn>=1.0",
