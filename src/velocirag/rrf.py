@@ -139,7 +139,7 @@ def _generate_doc_id(result: dict[str, Any], doc_id_fn: Callable[[dict], str] | 
             file_id += f"_chunk_{metadata['chunk_index']}"
         return file_id
     
-    # Last resort: hash the content (using MD5 like chunker)
+    # Last resort: hash the content
     content = result.get('content', '')
-    content_hash = hashlib.md5(content.encode()).hexdigest()[:12]
+    content_hash = hashlib.sha256(content.encode()).hexdigest()
     return f"content_hash_{content_hash}"

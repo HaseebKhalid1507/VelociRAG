@@ -7,6 +7,7 @@ degradation when models fail to load. Requires optional 'reranker' dependency.
 """
 
 import logging
+import threading
 import warnings
 from typing import Dict, List, Any
 
@@ -14,6 +15,7 @@ from typing import Dict, List, Any
 # Defer until the model is actually needed.
 HAS_CROSS_ENCODER = None  # Tri-state: None = unchecked, True/False = resolved
 CrossEncoder = None
+_import_lock = threading.Lock()
 
 # Constants
 DEFAULT_MODEL = "cross-encoder/ms-marco-TinyBERT-L-2-v2"
@@ -127,13 +129,14 @@ class Reranker:
             return
 
         # Lazy-resolve: first time, try importing sentence-transformers
-        if HAS_CROSS_ENCODER is None:
-            try:
-                from sentence_transformers import CrossEncoder as _CE
-                CrossEncoder = _CE
-                HAS_CROSS_ENCODER = True
-            except ImportError:
-                HAS_CROSS_ENCODER = False
+        with _import_lock:
+            if HAS_CROSS_ENCODER is None:
+                try:
+                    from sentence_transformers import CrossEncoder as _CE
+                    CrossEncoder = _CE
+                    HAS_CROSS_ENCODER = True
+                except ImportError:
+                    HAS_CROSS_ENCODER = False
 
         if not HAS_CROSS_ENCODER:
             self._load_error = "sentence-transformers not installed (install with: pip install velocirag[reranker])"

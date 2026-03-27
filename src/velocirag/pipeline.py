@@ -5,6 +5,7 @@ Graph build pipeline for Velocirag.
 Clean orchestration with proper error handling and progress reporting.
 """
 
+import gc
 import json
 import logging
 from collections import defaultdict
@@ -138,19 +139,15 @@ class GraphPipeline:
             
             # Free entity model before loading relation model (memory safety on 8GB)
             if hasattr(self.entity_analyzer, '_model') and self.entity_analyzer._model is not None:
-                del self.entity_analyzer._model
                 self.entity_analyzer._model = None
-                import gc
             gc.collect()
-            
+
             # Stage 4.5: Relation extraction (if available)
             if self.relation_analyzer:
                 self._stage_4_5_relation_analysis()
                 # Free relation model too
                 if hasattr(self.relation_analyzer, '_model') and self.relation_analyzer._model is not None:
-                    del self.relation_analyzer._model
                     self.relation_analyzer._model = None
-                    import gc
             gc.collect()
             
             # Stage 5: Temporal analysis
@@ -180,7 +177,6 @@ class GraphPipeline:
                 self.embedder._cache.clear()
                 self.embedder = None
             self.topic_analyzer = None
-            import gc
             gc.collect()
             logger.info(f"Freed content from {content_freed} nodes + embedder model")
             
@@ -218,12 +214,15 @@ class GraphPipeline:
         logger.info("Stage 1: Scanning markdown files...")
         start_time = datetime.now()
         
-        source_path = Path(source_path)
+        source_path = Path(source_path).resolve()
         if not source_path.exists():
             raise ValueError(f"Source path does not exist: {source_path}")
-        
-        # Find all markdown files
-        md_files = list(source_path.rglob("*.md"))
+
+        # Find all markdown files, skipping symlinks that escape the source directory
+        md_files = [
+            f for f in source_path.rglob("*.md")
+            if not f.is_symlink() or f.resolve().is_relative_to(source_path)
+        ]
         logger.info(f"Found {len(md_files)} markdown files")
         
         # Create note nodes

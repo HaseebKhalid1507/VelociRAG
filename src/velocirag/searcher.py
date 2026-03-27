@@ -269,19 +269,14 @@ class Searcher:
             embed_start = time.time()
             try:
                 variant_embeddings = self.embedder.embed(variants)
-                # Handle shape differences - embedder returns different shapes for single vs multiple
+                # Always ensure 2D shape (n_variants, dimensions)
                 if variant_embeddings.ndim == 1:
-                    # Single embedding, reshape to 2D
                     variant_embeddings = variant_embeddings.reshape(1, -1)
-                elif len(variants) == 1 and variant_embeddings.ndim == 2 and variant_embeddings.shape[0] == 1:
-                    # Single variant but embedder returned 2D with one row
-                    pass
-                
-                # Normalize each embedding
+
+                # Normalize each embedding for cosine similarity
                 normalized_embeddings = []
-                for i in range(len(variants)):
-                    embedding = variant_embeddings[i] if variant_embeddings.ndim == 2 else variant_embeddings
-                    # Normalize for cosine similarity
+                for i in range(variant_embeddings.shape[0]):
+                    embedding = variant_embeddings[i]
                     norm = np.linalg.norm(embedding)
                     normalized_embedding = embedding / norm if norm > 0 else embedding
                     normalized_embeddings.append(normalized_embedding)
@@ -318,11 +313,17 @@ class Searcher:
                             row = conn.execute('SELECT doc_id, content, metadata FROM documents WHERE faiss_idx = ?', (int(faiss_idx),)).fetchone()
                             if row:
                                 import json
+                                metadata = json.loads(row[2]) if row[2] else {}
+                                if not isinstance(metadata, dict):
+                                    logger.warning(f"Invalid metadata type for doc {row[0]}: {type(metadata).__name__}")
+                                    metadata = {}
                                 variant_results.append({
                                     'doc_id': row[0], 'content': row[1],
-                                    'metadata': json.loads(row[2]) if row[2] else {},
+                                    'metadata': metadata,
                                     'similarity': float(sim), 'score': float(sim)
                                 })
+                            else:
+                                logger.warning(f"FAISS index {faiss_idx} has no matching document in SQLite")
                     all_results.append(variant_results)
                     
                     if include_stats:
@@ -375,7 +376,11 @@ class Searcher:
             try:
                 # Use doc_id from store results for deduplication
                 def doc_id_extractor(result: Dict) -> str:
-                    return result.get('doc_id', f"content_hash_{hash(result.get('content', ''))}")
+                    doc_id = result.get('doc_id')
+                    if doc_id:
+                        return doc_id
+                    import hashlib as _hl
+                    return f"content_hash_{_hl.sha256(result.get('content', '').encode()).hexdigest()}"
                 
                 fused_results = reciprocal_rank_fusion(
                     all_results,
@@ -451,7 +456,8 @@ class Searcher:
         except SearchError:
             raise
         except Exception as e:
-            _ = (time.time() - start_time) * 1000
+            elapsed_ms = (time.time() - start_time) * 1000
+            logger.error(f"Search pipeline failed for query '{query}' after {elapsed_ms:.1f}ms: {e}")
             raise SearchError(f"Search pipeline failed for query '{query}': {e}")
     
     def search_embedding(
@@ -541,7 +547,8 @@ class Searcher:
             return response
             
         except Exception as e:
-            _ = (time.time() - start_time) * 1000
+            elapsed_ms = (time.time() - start_time) * 1000
+            logger.error(f"Embedding search failed after {elapsed_ms:.1f}ms: {e}")
             raise SearchError(f"Embedding search failed: {e}")
     
     def _deduplicate_by_file(self, results: List[Dict]) -> List[Dict]:
@@ -574,11 +581,13 @@ class Searcher:
             # Handle chunk-based paths (format: "prefix::file_path::suffix")
             if '::' in file_path:
                 parts = file_path.split('::')
-                if len(parts) >= 2:
-                    # Take the middle part as the actual file path
-                    base_file = parts[1] if len(parts) > 2 else parts[0]
+                if len(parts) > 2:
+                    # Format: "source::file_path::chunk_N" — take the middle part
+                    base_file = parts[1]
+                elif len(parts) == 2:
+                    # Format: "file_path::chunk_N" — take the first part
+                    base_file = parts[0]
                 else:
-                    # Fallback: use the first part
                     base_file = parts[0]
             else:
                 base_file = file_path
@@ -627,8 +636,9 @@ class Searcher:
             if doc_count > 0 and faiss_count > 0 and doc_count != faiss_count:
                 logger.warning(f"Index inconsistency: {doc_count} docs vs {faiss_count} FAISS vectors")
                 is_consistent = False
-            if dimensions is not None and dimensions != 384:  # Expected MiniLM dimensions
-                logger.warning(f"Unexpected embedding dimensions: {dimensions}")
+            expected_dims = self.embedder._get_model_dimensions() if self.embedder else 384
+            if dimensions is not None and dimensions != expected_dims:
+                logger.warning(f"Unexpected embedding dimensions: {dimensions} (expected {expected_dims})")
                 is_consistent = False
             
         except Exception as e:

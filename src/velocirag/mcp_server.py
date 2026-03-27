@@ -390,9 +390,11 @@ def health() -> dict:
             try:
                 import sqlite3
                 conn = sqlite3.connect(str(db_path / "graph.db"))
-                graph_nodes = conn.execute("SELECT COUNT(*) FROM nodes").fetchone()[0]
-                graph_edges = conn.execute("SELECT COUNT(*) FROM edges").fetchone()[0]
-                conn.close()
+                try:
+                    graph_nodes = conn.execute("SELECT COUNT(*) FROM nodes").fetchone()[0]
+                    graph_edges = conn.execute("SELECT COUNT(*) FROM edges").fetchone()[0]
+                finally:
+                    conn.close()
             except Exception:
                 pass
         
@@ -462,26 +464,26 @@ def list_sources(limit: int = 50) -> dict:
             }
         
         conn = sqlite3.connect(str(db_file))
-        
-        # Get distinct file paths from documents table
-        cursor = conn.execute("""
-            SELECT DISTINCT json_extract(metadata, '$.file_path') as file_path
-            FROM documents 
-            WHERE json_extract(metadata, '$.file_path') IS NOT NULL
-            LIMIT ?
-        """, (limit,))
-        
-        sources = [row[0] for row in cursor.fetchall() if row[0]]
-        
-        # Get total count
-        total = conn.execute("""
-            SELECT COUNT(DISTINCT json_extract(metadata, '$.file_path'))
-            FROM documents 
-            WHERE json_extract(metadata, '$.file_path') IS NOT NULL
-        """).fetchone()[0]
-        
-        conn.close()
-        
+        try:
+            # Get distinct file paths from documents table
+            cursor = conn.execute("""
+                SELECT DISTINCT json_extract(metadata, '$.file_path') as file_path
+                FROM documents
+                WHERE json_extract(metadata, '$.file_path') IS NOT NULL
+                LIMIT ?
+            """, (limit,))
+
+            sources = [row[0] for row in cursor.fetchall() if row[0]]
+
+            # Get total count
+            total = conn.execute("""
+                SELECT COUNT(DISTINCT json_extract(metadata, '$.file_path'))
+                FROM documents
+                WHERE json_extract(metadata, '$.file_path') IS NOT NULL
+            """).fetchone()[0]
+        finally:
+            conn.close()
+
         return {
             'sources': sources,
             'total_sources': total

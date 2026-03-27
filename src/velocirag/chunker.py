@@ -9,6 +9,7 @@ Extracted from production Jawz vector search system.
 import re
 import hashlib
 import frontmatter
+import yaml
 
 # Chunking constants
 MIN_FILE_SIZE_FOR_CHUNKING = 500  # Files smaller than this become single chunk
@@ -49,7 +50,7 @@ def chunk_markdown(content: str | None, file_path: str = "") -> list[dict]:
         post = frontmatter.loads(content)
         body = post.content
         metadata = post.metadata
-    except Exception:  # Catch all frontmatter parsing errors
+    except (yaml.YAMLError, ValueError, TypeError, KeyError, AttributeError):
         body = content
         metadata = {}
     

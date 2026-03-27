@@ -398,13 +398,20 @@ class Embedder:
                 logger.warning(f"Cache backend mismatch: expected onnx, got {cache_backend}. Starting fresh.")
                 return
             
-            # Load embeddings
-            embeddings = cache_data.get("embeddings", {})
-            
+            # Load embeddings, validating values are lists
+            raw_embeddings = cache_data.get("embeddings", {})
+            valid_embeddings = {
+                k: v for k, v in raw_embeddings.items()
+                if isinstance(v, list) and len(v) > 0
+            }
+            skipped = len(raw_embeddings) - len(valid_embeddings)
+
             with self._cache_lock:
-                self._cache = OrderedDict(embeddings)
-            
-            logger.info(f"Cache loaded: {len(embeddings)} entries from {cache_path}")
+                self._cache = OrderedDict(valid_embeddings)
+
+            if skipped:
+                logger.warning(f"Cache: skipped {skipped} invalid entries from {cache_path}")
+            logger.info(f"Cache loaded: {len(valid_embeddings)} entries from {cache_path}")
             
         except (json.JSONDecodeError, OSError, KeyError) as e:
             logger.warning(f"Failed to load cache from {cache_path}: {e}. Starting fresh.")
@@ -443,6 +450,7 @@ class Embedder:
                     miss_indices.append(i)
         
         # Compute missing embeddings if any
+        should_save = False
         if cache_misses:
             new_embeddings = self._encode_onnx(cache_misses)
             
@@ -460,10 +468,13 @@ class Embedder:
                 
                 # Apply LRU eviction if needed
                 self._evict_lru()
-            
-            # Periodic save
-            if self._new_entries >= CACHE_SAVE_INTERVAL:
-                self._new_entries = 0
+
+                # Periodic save (check inside lock to avoid race on _new_entries)
+                should_save = self._new_entries >= CACHE_SAVE_INTERVAL
+                if should_save:
+                    self._new_entries = 0
+
+            if should_save:
                 self.save_cache()
         
         # Convert to final numpy array

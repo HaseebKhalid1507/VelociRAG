@@ -354,85 +354,99 @@ class VelociragDaemon:
 
 # Client functions for CLI integration
 
-def daemon_search(query: str, limit: int = 5, threshold: float = 0.3, 
+def _recv_response(sock) -> bytes | None:
+    """Read a length-prefixed response from a daemon socket. Returns None on failure."""
+    raw_len = sock.recv(4)
+    if not raw_len or len(raw_len) < 4:
+        return None
+    msg_len = struct.unpack('>I', raw_len)[0]
+    response_data = b""
+    while len(response_data) < msg_len:
+        chunk = sock.recv(min(msg_len - len(response_data), 65536))
+        if not chunk:
+            return None
+        response_data += chunk
+    return response_data
+
+
+def daemon_search(query: str, limit: int = 5, threshold: float = 0.3,
                   socket_path: str = SOCKET_PATH) -> dict | None:
     """Query the daemon. Returns None if daemon not running."""
+    sock = None
     try:
         sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         sock.settimeout(10.0)
         sock.connect(socket_path)
-        
+
         request = {
             "cmd": "search",
             "query": query,
             "limit": limit,
             "threshold": threshold
         }
-        
-        # Send request
+
         data = json.dumps(request).encode('utf-8')
         sock.sendall(struct.pack('>I', len(data)) + data)
-        
-        # Read response
-        raw_len = sock.recv(4)
-        if not raw_len:
+
+        response_data = _recv_response(sock)
+        if not response_data:
             return None
-            
-        msg_len = struct.unpack('>I', raw_len)[0]
-        response_data = b""
-        while len(response_data) < msg_len:
-            chunk = sock.recv(min(msg_len - len(response_data), 65536))
-            if not chunk:
-                return None
-            response_data += chunk
-            
-        sock.close()
+
         return json.loads(response_data.decode('utf-8'))
-        
+
     except (ConnectionRefusedError, FileNotFoundError):
         return None  # Daemon not running
+    finally:
+        if sock:
+            sock.close()
 
 
 def daemon_health(socket_path: str = SOCKET_PATH) -> dict | None:
     """Get daemon health info."""
+    sock = None
     try:
         sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         sock.settimeout(5.0)
         sock.connect(socket_path)
-        
+
         request = {"cmd": "health"}
         data = json.dumps(request).encode('utf-8')
         sock.sendall(struct.pack('>I', len(data)) + data)
-        
-        raw_len = sock.recv(4)
-        msg_len = struct.unpack('>I', raw_len)[0]
-        response_data = sock.recv(msg_len)
-        sock.close()
-        
+
+        response_data = _recv_response(sock)
+        if not response_data:
+            return None
+
         return json.loads(response_data.decode('utf-8'))
-        
+
     except (ConnectionRefusedError, FileNotFoundError):
         return None
+    finally:
+        if sock:
+            sock.close()
 
 
 def daemon_ping(socket_path: str = SOCKET_PATH) -> bool:
     """Test if daemon is responsive."""
+    sock = None
     try:
         sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         sock.settimeout(2.0)
         sock.connect(socket_path)
-        
+
         request = {"cmd": "ping"}
         data = json.dumps(request).encode('utf-8')
         sock.sendall(struct.pack('>I', len(data)) + data)
-        
-        raw_len = sock.recv(4)
-        msg_len = struct.unpack('>I', raw_len)[0]
-        response_data = sock.recv(msg_len)
-        sock.close()
-        
+
+        response_data = _recv_response(sock)
+        if not response_data:
+            return False
+
         response = json.loads(response_data.decode('utf-8'))
         return response.get("pong") is True
-        
+
     except Exception:
         return False
+    finally:
+        if sock:
+            sock.close()

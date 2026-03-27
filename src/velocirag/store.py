@@ -369,8 +369,12 @@ class VectorStore:
                 
                 if row:
                     doc_id, content, metadata_json = row
-                    metadata = json.loads(metadata_json) if metadata_json else {}
-                    
+                    try:
+                        metadata = json.loads(metadata_json) if metadata_json else {}
+                    except (json.JSONDecodeError, TypeError):
+                        logger.warning(f"Corrupted metadata for doc {doc_id}, using empty dict")
+                        metadata = {}
+
                     results.append({
                         'doc_id': doc_id,
                         'content': content,
@@ -500,20 +504,20 @@ class VectorStore:
                 ''', (safe_query, limit)).fetchall()
             except Exception as e:
                 # Last resort: try as a single phrase
-                logging.warning(f"FTS5 query failed with safe_query '{safe_query}': {e}")
+                logger.warning(f"FTS5 query failed with safe_query '{safe_query}': {e}")
                 try:
                     phrase = query.replace('"', '').replace("'", "")
                     rows = conn.execute('''
                         SELECT doc_id, file_path,
                                snippet(chunks_fts, 1, '', '', '...', 64) as snippet,
                                rank
-                        FROM chunks_fts 
+                        FROM chunks_fts
                         WHERE chunks_fts MATCH ?
                         ORDER BY rank
                         LIMIT ?
                     ''', (f'"{phrase}"', limit)).fetchall()
-                except Exception as e:
-                    logging.warning(f"FTS5 phrase query also failed with phrase '{phrase}': {e}")
+                except Exception as e2:
+                    logger.warning(f"FTS5 phrase fallback also failed for query '{query}': {e2}")
                     return []
             
             results = []
@@ -551,11 +555,17 @@ class VectorStore:
                 return None
             
             doc_id, content, metadata_json, embedding_blob, faiss_idx, created = row
-            
+
+            try:
+                metadata = json.loads(metadata_json) if metadata_json else {}
+            except (json.JSONDecodeError, TypeError):
+                logger.warning(f"Corrupted metadata for doc {doc_id}, using empty dict")
+                metadata = {}
+
             return {
                 'doc_id': doc_id,
                 'content': content,
-                'metadata': json.loads(metadata_json) if metadata_json else {},
+                'metadata': metadata,
                 'embedding': np.frombuffer(embedding_blob, dtype=np.float32),
                 'faiss_idx': faiss_idx,
                 'created': created
@@ -651,13 +661,15 @@ class VectorStore:
 
     def rebuild_index(self, batch_size: int = 2000) -> None:
         """Rebuild all FAISS indices from SQLite embeddings.
-        
+
         Memory-efficient: streams embeddings in batches instead of loading all at once.
         Supports indexing 10K+ documents without OOM on 8GB systems.
-        
+
         Args:
-            batch_size: Number of rows to process per batch (default: 2000)
+            batch_size: Number of rows to process per batch (default: 2000, must be > 0)
         """
+        if batch_size < 1:
+            raise ValueError(f"batch_size must be positive, got {batch_size}")
         with self._connect() as conn:
             # Get total count first
             total = conn.execute('SELECT COUNT(*) FROM documents').fetchone()[0]
@@ -804,7 +816,11 @@ class VectorStore:
         finally:
             self._auto_rebuild = old_auto
             if self._index_dirty:
-                self.rebuild_index()
+                try:
+                    self.rebuild_index()
+                except Exception as e:
+                    logger.error(f"Index rebuild failed after batch operation: {e}")
+                    # Don't mask the original exception — just log and leave dirty flag set
     
     @contextmanager
     def _connect(self):

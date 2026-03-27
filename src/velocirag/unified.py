@@ -263,7 +263,6 @@ class UnifiedSearch:
         # Normalize keyword results — preserve BM25 rank ordering
         keyword_ranked = []
         for i, result in enumerate(keyword_results):
-            _ = result.get('doc_id', '')
             filename = result.get('file_path', '')
             if filename:
                 # FTS5 rank is negative (lower = better). Normalize to 0-1.
