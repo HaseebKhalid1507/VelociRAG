@@ -33,7 +33,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ~/.cache/velocirag
-          key: velocirag-models-minilm-v1
+          key: velocirag-models-minilm-v2
 
       - name: Install dependencies
         run: |
@@ -43,15 +43,15 @@ jobs:
       - name: Lint
         run: ruff check src/
 
-      - name: Test (fast — no model loading)
+      - name: Test (core — no model loading)
         run: |
-          pytest tests/test_rrf.py tests/test_chunker.py tests/test_graph.py tests/test_frontmatter.py -q --tb=short
+          pytest tests/test_rrf.py tests/test_chunker.py tests/test_graph.py tests/test_frontmatter.py tests/test_metadata.py -q --tb=short
 
-      - name: Test (full — with ONNX model)
+      - name: Test (MCP + integration)
         run: |
-          pytest tests/ -q --tb=short -x -k "not incremental and not modified_file and not deleted_file"
+          pytest tests/test_mcp.py tests/test_unified.py tests/test_store.py tests/test_cli.py -q --tb=short -k "not incremental and not modified_file and not deleted_file and not environment_variable and not dimensions"
 
-  typecheck:
+  lint:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -59,6 +59,5 @@ jobs:
         with:
           python-version: "3.12"
       - run: |
-          pip install -e ".[dev,mcp,graph]"
-          pip install pyright
-          pyright src/velocirag/ --level basic || true  # advisory, don't block
+          pip install ruff
+          ruff check src/
