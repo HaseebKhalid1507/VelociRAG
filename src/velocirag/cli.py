@@ -224,25 +224,31 @@ def index(ctx, path: str, db: Optional[str], source: str, force: bool, graph: bo
         
         # Build graph if requested
         if graph:
-            # Free VectorStore before graph build — reclaims ~1.5GB on large corpora
+            # Free VectorStore + embedder before graph build — reclaims ~2GB on large corpora
+            # The pipeline will create its own embedder for semantic analysis
             del store
+            embedder.save_cache()
+            embedder._model = None
+            embedder._cache.clear()
+            del embedder
             import gc; gc.collect()
-            
+
             click.echo()
             click.echo(f"Building knowledge graph...")
             try:
                 graph_db = db_path / "graph.db"
                 graph_store = GraphStore(str(graph_db))
-                
+
                 metadata_store_obj = None
                 if metadata:
                     metadata_db = db_path / "metadata.db"
                     metadata_store_obj = MetadataStore(str(metadata_db))
-                
+
                 entity_ext = 'gliner' if gliner else 'regex'
+                graph_embedder = Embedder()
                 pipeline = GraphPipeline(
                     graph_store=graph_store,
-                    embedder=embedder,
+                    embedder=graph_embedder,
                     metadata_store=metadata_store_obj,
                     entity_extractor=entity_ext
                 )

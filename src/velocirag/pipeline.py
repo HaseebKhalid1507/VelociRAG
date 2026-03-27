@@ -14,7 +14,7 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 import hashlib
 
 from .graph import GraphStore, Node, Edge, NodeType, RelationType
-from .embedder import Embedder
+from .embedder import Embedder, MIN_CACHE_SIZE
 from .analyzers import (
     ExplicitAnalyzer,
     TemporalAnalyzer, 
@@ -78,6 +78,11 @@ class GraphPipeline:
                 pass
         
         self.topic_analyzer = TopicAnalyzer(n_topics=10)
+        # Minimize embedder cache for graph builds — 7k cached embeddings as Python lists
+        # consume ~2GB of RAM.  The graph pipeline only embeds each doc once anyway.
+        if embedder is not None:
+            embedder._cache.clear()
+            embedder.cache_size = MIN_CACHE_SIZE
         self.semantic_analyzer = SemanticAnalyzer(embedder, threshold=0.7) if embedder else None
         self.centrality_analyzer = CentralityAnalyzer()
         
@@ -150,26 +155,25 @@ class GraphPipeline:
             # Stage 6: Topic analysis
             self._stage_6_topic_analysis()
             
-            # Free TF-IDF artifacts from Stage 6 before semantic analysis
-            if hasattr(self.topic_analyzer, '_vectorizer'):
-                del self.topic_analyzer._vectorizer
-            if hasattr(self.topic_analyzer, '_kmeans'):
-                del self.topic_analyzer._kmeans
-            import gc; gc.collect()
-            
             # Stage 7: Semantic analysis (if embedder available)
             if self.semantic_analyzer:
                 self._stage_7_semantic_analysis()
-            
+
             # Free memory after semantic analysis — content and embedder no longer needed
             content_freed = 0
             for node in self.nodes:
                 if node.content:
                     node.content = None
                     content_freed += 1
+            if self.semantic_analyzer and self.semantic_analyzer.embedder:
+                self.semantic_analyzer.embedder._model = None
+                self.semantic_analyzer.embedder._cache.clear()
+            self.semantic_analyzer = None
             if self.embedder:
-                del self.embedder
+                self.embedder._model = None
+                self.embedder._cache.clear()
                 self.embedder = None
+            self.topic_analyzer = None
             import gc; gc.collect()
             logger.info(f"Freed content from {content_freed} nodes + embedder model")
             

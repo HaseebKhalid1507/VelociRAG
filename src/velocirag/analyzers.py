@@ -136,45 +136,69 @@ class TemporalAnalyzer:
     def __init__(self, window_days: int = 7):
         self.window_days = window_days
     
+    # Cap temporal edges to prevent O(n²) blowup when many docs share similar dates
+    MAX_TEMPORAL_EDGES = 50000
+    MAX_EDGES_PER_NODE = 20
+
     def analyze(self, nodes: List[Node]) -> Tuple[List[Node], List[Edge]]:
         """Extract temporal relationships."""
         new_nodes = []
         new_edges = []
-        
+
         # Group nodes by date
         dated_nodes = self._extract_dates_from_nodes(nodes)
         if len(dated_nodes) < 2:
             return new_nodes, new_edges
-        
+
         # Sort by date
         sorted_nodes = sorted(dated_nodes, key=lambda x: x['date'])
-        
-        # Create temporal edges
+
+        # Create temporal edges with caps to prevent memory blowup
+        # When many docs share similar dates (e.g. bulk-cloned repos), the O(n²)
+        # pair loop can produce millions of edges — 7k same-day files = 24.5M edges.
+        edge_counts = Counter()  # track per-node edge count
+
         for i, current in enumerate(sorted_nodes):
+            source_id = current['node'].id
+            if edge_counts[source_id] >= self.MAX_EDGES_PER_NODE:
+                continue
+
             for j, other in enumerate(sorted_nodes[i+1:], i+1):
                 time_diff = abs((other['date'] - current['date']).days)
-                
-                if time_diff <= self.window_days:
-                    # Concurrent relationship
-                    edge_id = f"temporal_{current['node'].id}_{other['node'].id}"
-                    weight = max(0.3, 1.0 - (time_diff / self.window_days) * 0.5)
-                    
-                    edge = Edge(
-                        id=edge_id,
-                        source_id=current['node'].id,
-                        target_id=other['node'].id,
-                        type=RelationType.TEMPORAL,  # Temporal proximity, NOT semantic similarity
-                        weight=weight,
-                        confidence=0.7,
-                        metadata={
-                            'temporal_type': 'concurrent',
-                            'days_apart': time_diff,
-                            'source_date': current['date'].isoformat(),
-                            'target_date': other['date'].isoformat()
-                        }
-                    )
-                    new_edges.append(edge)
-        
+
+                if time_diff > self.window_days:
+                    break  # sorted by date, no more matches
+
+                target_id = other['node'].id
+                if edge_counts[target_id] >= self.MAX_EDGES_PER_NODE:
+                    continue
+
+                edge_id = f"temporal_{source_id}_{target_id}"
+                weight = max(0.3, 1.0 - (time_diff / self.window_days) * 0.5)
+
+                edge = Edge(
+                    id=edge_id,
+                    source_id=source_id,
+                    target_id=target_id,
+                    type=RelationType.TEMPORAL,
+                    weight=weight,
+                    confidence=0.7,
+                    metadata={
+                        'temporal_type': 'concurrent',
+                        'days_apart': time_diff,
+                    }
+                )
+                new_edges.append(edge)
+                edge_counts[source_id] += 1
+                edge_counts[target_id] += 1
+
+                if len(new_edges) >= self.MAX_TEMPORAL_EDGES:
+                    logger.warning(f"TemporalAnalyzer: hit {self.MAX_TEMPORAL_EDGES} edge cap, stopping early")
+                    break
+
+            if len(new_edges) >= self.MAX_TEMPORAL_EDGES:
+                break
+
         logger.info(f"TemporalAnalyzer: {len(new_edges)} temporal edges")
         return new_nodes, new_edges
     
@@ -883,19 +907,21 @@ class SemanticAnalyzer:
             return new_nodes, new_edges
         
         matrix = np.array(embedding_list, dtype=np.float32)
+        embedding_list.clear()  # Free the Python list — matrix has the data now
+
         # Normalize for cosine similarity via inner product
         norms = np.linalg.norm(matrix, axis=1, keepdims=True)
         norms[norms == 0] = 1  # avoid division by zero
         matrix = matrix / norms
-        
+
         dims = matrix.shape[1]
         index = faiss.IndexFlatIP(dims)
         index.add(matrix)
-        
+
         # Search for top-K neighbors per node (+1 because self is always top match)
         k = min(self.max_edges_per_node + 1, len(node_ids))
         similarities, indices = index.search(matrix, k)
-        
+
         # Free the matrix — FAISS has its own copy
         del matrix
         
@@ -994,46 +1020,45 @@ class CentralityAnalyzer:
     
     def _simple_betweenness(self, graph: Dict, node_ids: Set[str], max_samples: int = 500) -> Dict[str, float]:
         """Approximate betweenness centrality via sampling.
-        
+
         Instead of BFS from every node (O(n²) memory + compute),
         samples up to max_samples source nodes for O(sample * n) complexity.
         Standard approximation that scales to large graphs.
+
+        Memory-efficient: uses BFS parent pointers instead of storing full paths.
         """
         import random
         betweenness = {node_id: 0.0 for node_id in node_ids}
-        
+
         # Sample source nodes — don't BFS from every single node
         sources = list(node_ids)
         if len(sources) > max_samples:
             random.shuffle(sources)
             sources = sources[:max_samples]
             logger.info(f"CentralityAnalyzer: sampling {max_samples}/{len(node_ids)} nodes for betweenness")
-        
+
         for source in sources:
-            # BFS from source
-            paths = self._bfs_paths(graph, source)
-            
-            # Count paths through each node
-            for target, path in paths.items():
-                if len(path) > 2:  # Path has intermediate nodes
-                    for intermediate in path[1:-1]:
-                        betweenness[intermediate] += 1.0
-        
+            # BFS storing only parent pointers — O(n) memory, not O(n × path_len)
+            parent = {source: None}
+            depth = {source: 0}
+            queue = deque([source])
+
+            while queue:
+                current = queue.popleft()
+                for neighbor in graph[current]:
+                    if neighbor not in parent:
+                        parent[neighbor] = current
+                        depth[neighbor] = depth[current] + 1
+                        queue.append(neighbor)
+
+            # Walk parent chain to count intermediates — only for paths with depth > 1
+            for target in parent:
+                if depth[target] <= 1:
+                    continue
+                # Walk backwards from target to source, counting intermediates
+                node = parent[target]
+                while node is not None and node != source:
+                    betweenness[node] += 1.0
+                    node = parent[node]
+
         return betweenness
-    
-    def _bfs_paths(self, graph: Dict, start: str) -> Dict[str, List[str]]:
-        """BFS to find shortest paths from start node."""
-        paths = {start: [start]}
-        queue = deque([start])
-        visited = {start}
-        
-        while queue:
-            current = queue.popleft()
-            
-            for neighbor in graph[current]:
-                if neighbor not in visited:
-                    visited.add(neighbor)
-                    paths[neighbor] = paths[current] + [neighbor]
-                    queue.append(neighbor)
-        
-        return paths

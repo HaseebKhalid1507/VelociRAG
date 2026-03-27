@@ -18,22 +18,36 @@ velocirag index ./my-docs --graph --metadata
 velocirag mcp
 ```
 
-**Claude Desktop config:**
+**Claude Code** — add to `.mcp.json` in your project root:
 ```json
 {
   "mcpServers": {
     "velocirag": {
-      "command": "velocirag", 
+      "command": "velocirag",
+      "args": ["mcp"],
+      "env": { "VELOCIRAG_DB": "/path/to/data" }
+    }
+  }
+}
+```
+Then open `/mcp` in Claude Code and enable the `velocirag` server. If using a virtualenv, use the full path to the binary (e.g. `.venv/bin/velocirag`).
+
+**Claude Desktop** — add to `claude_desktop_config.json`:
+```json
+{
+  "mcpServers": {
+    "velocirag": {
+      "command": "velocirag",
       "args": ["mcp", "--db", "/path/to/data"]
     }
   }
 }
 ```
 
-**Cursor config:**
+**Cursor** — add to `.cursor/mcp.json`:
 ```json
 {
-  "mcp": {
+  "mcpServers": {
     "velocirag": {
       "command": "velocirag",
       "args": ["mcp", "--db", "/path/to/data"]
