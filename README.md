@@ -129,7 +129,7 @@ Query → expand (acronyms, variants)
 - **ONNX Runtime** — 184ms cold start, 3ms cached. No PyTorch, no GPU
 - **Four-layer fusion** — FAISS vector similarity + SQLite FTS5 (BM25) + knowledge graph + metadata filtering, merged via reciprocal rank fusion
 - **Cross-encoder reranking** — TinyBERT reranker via ONNX Runtime — included in base install, no PyTorch needed. Downloads ~17MB model on first use
-- **Incremental graph updates** — file-centric provenance tracking detects what changed and only rebuilds affected nodes/edges. Multi-source support with isolated provenance per source
+- **Incremental graph updates** — file-centric provenance tracking detects what changed and only rebuilds affected nodes/edges. Cascading deletes maintain consistency across all stores (vector, graph, metadata). Multi-source support with isolated provenance per source
 - **MCP server** — Five tools (search, index, add_document, health, list_sources) for Claude, Cursor, Windsurf
 - **Search daemon** — Unix socket server keeps ONNX model + FAISS index warm between queries
 - **Knowledge graph** — Analyzers build entity, temporal, topic, and explicit-link edges from markdown. Optional GLiNER NER. 418 files in 2.1s
@@ -211,6 +211,9 @@ pipeline.build('./docs', source_name='my-docs', force_rebuild=True)
 # Multi-source graphs
 pipeline.build('./project-a', source_name='project-a')
 pipeline.build('./project-b', source_name='project-b')  # isolated provenance
+
+# Deleted files automatically cascade across all stores
+# (vector, FTS5, graph, metadata) on next build
 ```
 
 ## 💻 CLI Reference

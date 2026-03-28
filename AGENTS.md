@@ -8,7 +8,7 @@ VelociRAG is **lightning-fast RAG for AI agents**. Pure retrieval engine powered
 
 - **Language:** Python 3.10+
 - **Backend:** ONNX Runtime (no PyTorch)
-- **Source:** `src/velocirag/` (18 modules, ~10K lines)
+- **Source:** `src/velocirag/` (18 modules, ~12K lines)
 - **Tests:** `tests/` (18 test files)
 - **CLI:** `velocirag` (click-based)
 - **License:** MIT
@@ -36,23 +36,23 @@ markdown files → chunk → embed (ONNX) → store (SQLite + FAISS)
 
 | Module | Lines | Purpose |
 |--------|-------|---------|
-| `cli.py` | 1526 | Click CLI — index, search, serve, stop, status, mcp, health, query, reindex |
-| `store.py` | 1149 | Vector storage — SQLite + FAISS + FTS5. Batched rebuild, LIKE wildcard escaping. |
-| `analyzers.py` | 1079 | 7 graph analyzers + FAISS semantic (128-token truncation, skip <50 char docs) + sampled centrality. |
-| `graph.py` | 915 | Knowledge graph — Node/Edge models, GraphStore (SQLite), GraphQuerier |
-| `unified.py` | 903 | 4-layer fusion search — vector + keyword + metadata + graph → RRF. Filename cache. Exact-match promotion. |
-| `metadata.py` | 695 | Metadata store — frontmatter, tags, cross-refs, usage tracking |
-| `pipeline.py` | 686 | 10-stage graph build. `--light-graph` skips semantic (3.8s/680 files). Batched metadata. Memory-safe. |
-| `searcher.py` | 681 | High-level search — query variants, batch FAISS, RRF fusion, consistency validation |
-| `embedder.py` | 527 | ONNX Runtime embeddings (all-MiniLM-L6-v2, 384d). 3ms warm, 184ms cold. |
-| `mcp_server.py` | 498 | FastMCP server — 5 tools. Thread-safe init, `threading.Event`. |
-| `daemon.py` | 437 | Unix socket search daemon — warm engine, bounded queue, auto-detected by CLI |
-| `tracker.py` | 308 | Usage tracking — search hits, reads, access patterns |
+| `cli.py` | 1595 | Click CLI — index, search, serve, stop, status, mcp, health, query, reindex. Cascading delete orchestration on file cleanup. |
+| `analyzers.py` | 1568 | 7 graph analyzers + FAISS semantic (128-token truncation, skip <50 char docs) + sampled centrality. |
+| `pipeline.py` | 1275 | 10-stage graph build. Incremental updates with file-centric provenance. `final_nodes`/`final_edges` in all return paths. |
+| `store.py` | 1197 | Vector storage — SQLite + FAISS + FTS5. Batched rebuild. Cascading deletes with conn passthrough. Empty FAISS persistence. |
+| `graph.py` | 1116 | Knowledge graph — Node/Edge models, GraphStore (SQLite), GraphQuerier. `remove_by_source_file()` with orphan pruning. |
+| `unified.py` | 901 | 4-layer fusion search — vector + keyword + metadata + graph → RRF. Filename cache. Exact-match promotion. |
+| `metadata.py` | 744 | Metadata store — frontmatter, tags, cross-refs, usage tracking. `remove_document()` with orphan tag pruning. |
+| `searcher.py` | 688 | High-level search — query variants, batch FAISS, RRF fusion, consistency validation |
+| `embedder.py` | 541 | ONNX Runtime embeddings (all-MiniLM-L6-v2, 384d). 3ms warm, 184ms cold. |
+| `mcp_server.py` | 499 | FastMCP server — 5 tools. Thread-safe init, `threading.Event`. |
+| `daemon.py` | 462 | Unix socket search daemon — warm engine, bounded queue, auto-detected by CLI |
+| `tracker.py` | 305 | Usage tracking — search hits, reads, access patterns |
+| `reranker.py` | 235 | Cross-encoder reranking (TinyBERT via ONNX). Lazy init. |
 | `variants.py` | 217 | Query variant generation + acronym registry + question rewrite |
-| `reranker.py` | 186 | Cross-encoder reranking (TinyBERT). Lazy import. Optional: `pip install velocirag[reranker]` |
+| `chunker.py` | 177 | Markdown chunking by headers with parent context preservation |
 | `frontmatter.py` | 172 | YAML frontmatter parser, tag extraction, wiki-link extraction |
-| `chunker.py` | 158 | Markdown chunking by headers with parent context preservation |
-| `rrf.py` | 145 | Reciprocal Rank Fusion — shallow copy in hot path |
+| `rrf.py` | 144 | Reciprocal Rank Fusion — shallow copy in hot path |
 
 ## Key Classes
 
@@ -84,6 +84,12 @@ querier = GraphQuerier(graph_store)
 querier.find_connections("node_title", depth=2)
 querier.get_topic_web("topic")
 querier.get_hub_nodes(limit=10)
+
+# Cascading deletes (v0.6.3+)
+# When files are deleted, cleanup cascades across all stores:
+store._cleanup_deleted_files(Path('./docs'), 'notes')  # vector + FTS5
+metadata_store.remove_document('deleted-file.md')       # metadata + orphan tags
+graph_store.remove_by_source_file('/abs/path/file.md')  # nodes + edges + orphans
 
 # Daemon client
 from velocirag.daemon import daemon_search, daemon_ping
@@ -163,7 +169,7 @@ When you index, VelociRAG creates these in the `--db` directory:
 - `numpy`, `python-frontmatter`, `pyyaml`, `click`
 
 **Optional:**
-- `pip install velocirag[reranker]` — cross-encoder reranking (adds sentence-transformers + torch)
+- `pip install velocirag[reranker]` — cross-encoder reranking via ONNX (TinyBERT, ~17MB)
 - `pip install velocirag[mcp]` — MCP server (adds fastmcp)
 - `pip install velocirag[ner]` — GLiNER entity extraction
 - `pip install velocirag[graph]` — networkx, scikit-learn for advanced graph analysis
@@ -183,6 +189,7 @@ pytest tests/ -k "not incremental"     # Skip known flaky mtime tests
 
 - **Embedding backend:** ONNX Runtime via `Embedder()`. Downloads `optimum/all-MiniLM-L6-v2` on first use to `~/.cache/velocirag/models/`. No PyTorch needed.
 - **SQLite connections:** Always use `self._connect()` context manager (properly closes). Never `with sqlite3.connect() as conn:` (leaks FDs in long-running processes).
+- **Cascading deletes:** File deletion cascades from VectorStore → MetadataStore → GraphStore. `_remove_file_chunks` accepts optional `conn` parameter to avoid self-deadlock. MetadataStore prunes orphan tags. GraphStore prunes orphan entity/topic nodes with no edges. FAISS rebuild persists empty indices to disk (clears stale files).
 - **FTS5 queries:** Strip FTS5 operators, keep Unicode, wrap in quotes. Use try/except — MATCH can throw on syntax.
 - **Graph OOM safety:** SemanticAnalyzer uses FAISS top-K (not O(n²) pairwise), 128-token truncation (3.5x faster), skips docs <50 chars. TemporalAnalyzer caps at 50K edges. CentralityAnalyzer samples 500 BFS sources (parent-pointer BFS). Pipeline frees content + embedder after Stage 7. VectorStore freed before graph build in CLI. `--light-graph` skips semantic entirely (~2GB savings). Stage 2 metadata batched in single transaction (0.3s vs 4+ min).
 - **Reranker:** Optional dependency. Falls back to unranked results if sentence-transformers not installed.
