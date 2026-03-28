@@ -6,6 +6,7 @@ instead of arbitrary header positions. Falls back to header-based
 chunking when embedder is unavailable.
 """
 
+import gc
 import re
 import numpy as np
 from typing import Optional
@@ -63,13 +64,22 @@ def split_sentences(text: str) -> list[str]:
     return cleaned_sentences
 
 
+MAX_SENTENCES_FOR_SEMANTIC = 200  # Cap sentences per section to prevent memory explosion
+
+
 def calculate_boundary_scores(sentences: list[str], embedder) -> list[float]:
     """
     Embed each sentence, return cosine similarity between consecutive sentences.
     Returns list of N-1 similarity scores.
+    Caps at MAX_SENTENCES_FOR_SEMANTIC to prevent memory explosion on huge sections.
     """
     if len(sentences) < 2:
         return []
+    
+    # Cap sentences to prevent memory explosion on huge files
+    if len(sentences) > MAX_SENTENCES_FOR_SEMANTIC:
+        logger.info(f"Capping semantic analysis from {len(sentences)} to {MAX_SENTENCES_FOR_SEMANTIC} sentences")
+        sentences = sentences[:MAX_SENTENCES_FOR_SEMANTIC]
     
     try:
         # Embed all sentences at once for efficiency
@@ -517,9 +527,16 @@ def hybrid_chunk_markdown(content: str, file_path: str, embedder,
                 
                 hybrid_chunks.append(sub_chunk)
             
+            # Free numpy arrays from this section's boundary analysis
+            del similarities
+            del sentences
+            
         except Exception as e:
             logger.warning(f"Semantic splitting failed for section '{chunk['metadata']['section']}': {e}")
             # Keep original chunk on error
             hybrid_chunks.append(chunk)
+    
+    # Force garbage collection after processing all chunks
+    gc.collect()
     
     return hybrid_chunks
