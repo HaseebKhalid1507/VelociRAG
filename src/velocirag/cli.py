@@ -142,11 +142,15 @@ def cli(ctx, verbose: bool):
               help='Use GLiNER encoder model for entity extraction (requires pip install velocirag[ner])')
 @click.option('--full-graph', is_flag=True,
               help='Build graph WITH semantic similarity edges (uses ~2GB extra RAM)')
+@click.option('--semantic', is_flag=True,
+              help='Use semantic chunking instead of header-based chunking')
+@click.option('--threshold', type=float, default=25.0,
+              help='Semantic boundary threshold (lower = fewer splits, default: 25.0)')
 @click.option('--graph', '-g', is_flag=True, hidden=True, help='(Deprecated — graph is now default)')
 @click.option('--metadata', '-m', is_flag=True, hidden=True, help='(Deprecated — metadata is now default)')
 @click.option('--light-graph', is_flag=True, hidden=True, help='(Deprecated — light graph is now default)')
 @click.pass_context
-def index(ctx, path: str, db: Optional[str], source: str, force: bool, no_graph: bool, no_metadata: bool, gliner: bool, full_graph: bool, graph: bool, metadata: bool, light_graph: bool):
+def index(ctx, path: str, db: Optional[str], source: str, force: bool, no_graph: bool, no_metadata: bool, gliner: bool, full_graph: bool, semantic: bool, threshold: float, graph: bool, metadata: bool, light_graph: bool):
     """
     Index a directory of markdown files.
     
@@ -215,7 +219,17 @@ def index(ctx, path: str, db: Optional[str], source: str, force: bool, no_graph:
         
         if verbose:
             click.echo("Initializing vector store...")
-        store = VectorStore(str(db_path), embedder)
+        
+        # Setup custom chunker for semantic chunking
+        chunker = None
+        if semantic:
+            from .semantic_chunker import semantic_chunk_markdown
+            from functools import partial
+            chunker = partial(semantic_chunk_markdown, embedder=embedder, threshold=threshold)
+            if verbose:
+                click.echo(f"Using semantic chunking with threshold={threshold}")
+        
+        store = VectorStore(str(db_path), embedder, chunker=chunker)
         
         # Set force flag for mtime override
         if force:

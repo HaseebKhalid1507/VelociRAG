@@ -60,7 +60,7 @@ class VectorStore:
     - Atomic transactions and proper error handling
     """
 
-    def __init__(self, db_path: str, embedder: Optional[Embedder] = None, abstract_generator=None):
+    def __init__(self, db_path: str, embedder: Optional[Embedder] = None, abstract_generator=None, chunker: Optional[callable] = None):
         """
         Initialize vector store.
         
@@ -69,12 +69,15 @@ class VectorStore:
             embedder: Optional embedder instance. If None, store can still 
                      handle pre-computed embeddings but not add_directory()
             abstract_generator: Optional AbstractGenerator instance for L0/L1 generation
+            chunker: Optional custom chunker function with signature (content: str, file_path: str) -> list[dict].
+                    Defaults to chunk_markdown for header-based chunking.
         """
         self.db_path = Path(db_path)
         self.db_path.mkdir(parents=True, exist_ok=True)
         
         self.embedder = embedder
         self.abstract_generator = abstract_generator
+        self.chunker = chunker or chunk_markdown
         self.sqlite_path = self.db_path / "store.db"
         self.faiss_path = self.db_path / "index.faiss"
         self.faiss_l0_path = self.db_path / "index_l0.faiss"
@@ -255,7 +258,7 @@ class VectorStore:
                     self._remove_file_chunks(rel_path, source_name)
                     
                     # Process chunks
-                    chunks = chunk_markdown(content, str(rel_path))
+                    chunks = self.chunker(content, str(rel_path))
                     if not chunks:
                         stats['files_skipped'] += 1
                         continue
