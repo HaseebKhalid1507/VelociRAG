@@ -302,3 +302,5 @@ Production deployment (3,400+ documents, 4 sources):
 ---
 
 _Built for agents who think fast and remember faster._
+
+<!-- mcp-name: io.github.HaseebKhalid1507/velocirag -->
