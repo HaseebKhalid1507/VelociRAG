@@ -144,8 +144,8 @@ def cli(ctx, verbose: bool):
               help='Build graph WITH semantic similarity edges (uses ~2GB extra RAM)')
 @click.option('--semantic', is_flag=True,
               help='Use semantic chunking instead of header-based chunking')
-@click.option('--hybrid', is_flag=True,
-              help='Use hybrid chunking (header-based + semantic for large sections)')
+@click.option('--hybrid/--no-hybrid', default=True,
+              help='Use hybrid chunking (default: on). --no-hybrid for plain header-based.')
 @click.option('--threshold', type=float, default=25.0,
               help='Semantic boundary threshold (lower = fewer splits, default: 25.0)')
 @click.option('--large-section', type=int, default=1500,
@@ -224,24 +224,25 @@ def index(ctx, path: str, db: Optional[str], source: str, force: bool, no_graph:
         if verbose:
             click.echo("Initializing vector store...")
         
-        # Setup custom chunker for semantic or hybrid chunking
+        # Setup chunker — hybrid is default, --semantic for pure semantic, --no-hybrid for plain header-based
         chunker = None
         if hybrid and semantic:
             click.echo(error("Cannot use both --semantic and --hybrid flags together"), err=True)
             sys.exit(1)
-        elif hybrid:
-            from .semantic_chunker import hybrid_chunk_markdown
-            from functools import partial
-            chunker = partial(hybrid_chunk_markdown, embedder=embedder, 
-                            semantic_threshold=threshold, large_section_threshold=large_section)
-            if verbose:
-                click.echo(f"Using hybrid chunking (threshold={threshold}, large_section={large_section})")
         elif semantic:
             from .semantic_chunker import semantic_chunk_markdown
             from functools import partial
             chunker = partial(semantic_chunk_markdown, embedder=embedder, threshold=threshold)
             if verbose:
                 click.echo(f"Using semantic chunking with threshold={threshold}")
+        elif hybrid:
+            # hybrid is True by default (see flag definition)
+            from .semantic_chunker import hybrid_chunk_markdown
+            from functools import partial
+            chunker = partial(hybrid_chunk_markdown, embedder=embedder, 
+                            semantic_threshold=threshold, large_section_threshold=large_section)
+            if verbose:
+                click.echo(f"Using hybrid chunking (threshold={threshold}, large_section={large_section})")
         
         store = VectorStore(str(db_path), embedder, chunker=chunker)
         
