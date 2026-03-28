@@ -1,7 +1,7 @@
 {
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
   "name": "io.github.HaseebKhalid1507/velocirag",
-  "version": "0.7.0",
+  "version": "0.7.1",
   "description": "Lightning-fast RAG for AI agents. 4-layer fusion, ONNX Runtime, sub-200ms search.",
   "repository": {
     "url": "https://github.com/HaseebKhalid1507/VelociRAG",
@@ -12,7 +12,7 @@
       "registryType": "pypi",
       "registryBaseUrl": "https://pypi.org",
       "identifier": "velocirag",
-      "version": "0.7.0",
+      "version": "0.7.1",
       "transport": {
         "type": "stdio"
       }
