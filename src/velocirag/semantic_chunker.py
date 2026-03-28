@@ -442,6 +442,36 @@ def hybrid_chunk_markdown(content: str, file_path: str, embedder,
             hybrid_chunks.append(chunk)
             continue
         
+        # Skip semantic splitting for headerless mega-chunks (e.g., 55KB sessions_full.md)
+        # These are better handled by fixed-size splitting than expensive semantic analysis
+        if chunk['metadata'].get('section') in ('no_headers', 'full_document') and len(body_content) > max_chunk_size * 3:
+            logger.info(f"Skipping semantic analysis for large headerless section ({len(body_content)} chars), using fixed splits")
+            # Split by max_chunk_size at sentence boundaries
+            section_sentences = split_sentences(body_content)
+            fixed_chunks = []
+            current = ""
+            for sent in section_sentences:
+                if len(current) + len(sent) > max_chunk_size and current:
+                    fixed_chunks.append(current.strip())
+                    current = sent
+                else:
+                    current = current + " " + sent if current else sent
+            if current:
+                fixed_chunks.append(current.strip())
+            
+            original_section = chunk['metadata']['section']
+            for idx, sub_body in enumerate(fixed_chunks, 1):
+                sub_content = cch_header + "\n" + sub_body.strip() if cch_header else sub_body.strip()
+                sub_metadata = chunk['metadata'].copy()
+                sub_metadata['section'] = f"{original_section} (part {idx})"
+                sub_metadata['content_hash'] = _content_hash(sub_body.strip())
+                sub_metadata['hybrid_chunk'] = True
+                sub_metadata['parent_section'] = original_section
+                sub_metadata['part_number'] = idx
+                sub_metadata['total_parts'] = len(fixed_chunks)
+                hybrid_chunks.append({'content': sub_content, 'metadata': sub_metadata})
+            continue
+        
         # Step 4: Try semantic splitting on the body content
         try:
             # Split body into sentences
