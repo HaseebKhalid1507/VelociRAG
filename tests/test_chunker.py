@@ -22,10 +22,11 @@ class TestChunkMarkdown:
         
         assert len(result) == 1
         chunk = result[0]
-        assert chunk['content'] == small_content
+        assert small_content in chunk['content']  # Content contains original text
         assert chunk['metadata']['section'] == 'full_document'
         assert chunk['metadata']['parent_header'] is None
         assert chunk['metadata']['file_path'] == ""
+        assert chunk['metadata']['has_context_header'] is True
         assert len(chunk['metadata']['content_hash']) == 12
     
     def test_no_headers(self):
@@ -35,10 +36,11 @@ class TestChunkMarkdown:
         
         assert len(result) == 1
         chunk = result[0]
-        assert chunk['content'] == content
+        assert content in chunk['content']  # Content contains original text
         assert chunk['metadata']['section'] == 'no_headers'
         assert chunk['metadata']['parent_header'] is None
         assert chunk['metadata']['file_path'] == "test.md"
+        assert chunk['metadata']['has_context_header'] is True
     
     def test_header_hierarchy_fixed(self):
         """Test fixed parent header hierarchy."""
@@ -101,7 +103,9 @@ Code goes here.
         assert chunk['metadata']['frontmatter']['tags'] == ['python', 'ai']
         assert chunk['metadata']['frontmatter']['author'] == "test"
         assert '## Implementation' in chunk['content']
-        assert '---' not in chunk['content']  # Frontmatter stripped from content
+        assert chunk['metadata']['has_context_header'] is True
+        # Frontmatter YAML is stripped, but context header has its own `---` separator
+        assert 'title: "Technical Document"' not in chunk['content']  # YAML frontmatter stripped
     
     def test_malformed_frontmatter(self):
         """Malformed YAML frontmatter doesn't crash."""
@@ -128,8 +132,19 @@ Content here.
         
         assert len(result) == 1
         chunk = result[0]
-        assert len(chunk['content']) == 4000  # MAX_CHUNK_SIZE
+        # Context header is "free" overhead, so total length > MAX_CHUNK_SIZE
+        assert len(chunk['content']) > 4000
         assert chunk['content'].endswith("...")
+        # The body content (after header) should respect MAX_CHUNK_SIZE
+        lines = chunk['content'].split('\n')
+        header_end_idx = None
+        for i, line in enumerate(lines):
+            if line == '---':
+                header_end_idx = i
+                break
+        assert header_end_idx is not None
+        body_content = '\n'.join(lines[header_end_idx + 1:])
+        assert len(body_content) <= 4000
     
     def test_empty_sections_filtered(self):
         """Very small sections are skipped based on MIN_SECTION_SIZE."""
@@ -308,7 +323,8 @@ This h3 appears after h2, should have h2 parent.
         assert len(result) == 1
         # Currently truncates at exact character, not word boundary
         assert result[0]['content'].endswith("...")
-        assert len(result[0]['content']) == 4000
+        # Context header is "free" overhead, so total length > MAX_CHUNK_SIZE
+        assert len(result[0]['content']) > 4000
     
     def test_very_deep_nesting(self):
         """Test with h4, h5, h6 headers mixed in (should be included in parent chunk)."""
@@ -412,7 +428,8 @@ Even more content to test various markdown elements within headers themselves.
         # Should handle without memory error
         result = chunk_markdown(huge_content)
         assert len(result) == 1
-        assert len(result[0]['content']) == 4000  # Truncated
+        # Context header is "free" overhead, so total length > MAX_CHUNK_SIZE
+        assert len(result[0]['content']) > 4000  # Truncated with context header
     
     def test_windows_line_endings(self):
         """Windows CRLF line endings should work correctly."""

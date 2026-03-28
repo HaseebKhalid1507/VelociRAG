@@ -73,16 +73,26 @@ def chunk_markdown(content: str | None, file_path: str = "") -> list[dict]:
         body = content
         metadata = {}
     
+    # Extract h1 header if exists at start (for context header)
+    h1_pattern = re.compile(r'^#\s+(.+)$', re.MULTILINE)
+    h1_match = h1_pattern.search(body[:H1_SEARCH_WINDOW])
+    h1_title = h1_match.group(1).strip() if h1_match else None
+    
+    # Build context header
+    context_header = build_context_header(file_path, metadata, h1_title)
+    
     # Small file optimization - don't chunk files under threshold
     if len(body.strip()) < MIN_FILE_SIZE_FOR_CHUNKING:
+        content_with_header = context_header + "\n" + body.strip()
         return [{
-            'content': body.strip(),
+            'content': content_with_header,
             'metadata': {
                 'file_path': file_path,
                 'section': 'full_document',
                 'parent_header': None,
                 'frontmatter': metadata,
-                'content_hash': _content_hash(body.strip())
+                'content_hash': _content_hash(body.strip()),
+                'has_context_header': True
             }
         }]
     
@@ -95,26 +105,22 @@ def chunk_markdown(content: str | None, file_path: str = "") -> list[dict]:
     
     if not headers:
         # No headers found - return as single chunk
+        content_with_header = context_header + "\n" + body.strip()
         return [{
-            'content': body.strip(),
+            'content': content_with_header,
             'metadata': {
                 'file_path': file_path,
                 'section': 'no_headers',
                 'parent_header': None,
                 'frontmatter': metadata,
-                'content_hash': _content_hash(body.strip())
+                'content_hash': _content_hash(body.strip()),
+                'has_context_header': True
             }
         }]
     
     # Track parent context (h1/h2 hierarchy)
-    current_h1 = None
+    current_h1 = h1_title  # Use already extracted h1_title
     current_h2 = None
-    
-    # Extract h1 header if exists at start
-    h1_pattern = re.compile(r'^#\s+(.+)$', re.MULTILINE)
-    h1_match = h1_pattern.search(body[:H1_SEARCH_WINDOW])
-    if h1_match:
-        current_h1 = h1_match.group(1).strip()
     
     # Process each header section
     for i, header_match in enumerate(headers):
@@ -140,17 +146,20 @@ def chunk_markdown(content: str | None, file_path: str = "") -> list[dict]:
         
         # Combine parent context with section content
         if parent_context:
-            full_content = "\n".join(parent_context) + "\n\n" + section_content
+            body_content = "\n".join(parent_context) + "\n\n" + section_content
         else:
-            full_content = section_content
+            body_content = section_content
         
         # Skip empty sections
-        if len(full_content.strip()) < MIN_SECTION_SIZE:
+        if len(body_content.strip()) < MIN_SECTION_SIZE:
             continue
         
-        # Truncate if too long (max ~1000 tokens)
-        if len(full_content) > MAX_CHUNK_SIZE:
-            full_content = full_content[:MAX_CHUNK_SIZE - 3] + "..."
+        # Truncate body content if too long (header is "free" context)
+        if len(body_content) > MAX_CHUNK_SIZE:
+            body_content = body_content[:MAX_CHUNK_SIZE - 3] + "..."
+        
+        # Prepend context header to body content
+        full_content = context_header + "\n" + body_content
         
         # FIXED: Consistent parent_header - ## sections get # parent, ### sections get ## parent
         parent_header = None
@@ -166,11 +175,53 @@ def chunk_markdown(content: str | None, file_path: str = "") -> list[dict]:
                 'section': header_text,
                 'parent_header': parent_header,
                 'frontmatter': metadata,
-                'content_hash': _content_hash(full_content.strip())
+                'content_hash': _content_hash(body_content.strip()),
+                'has_context_header': True
             }
         })
     
     return chunks
+
+
+def build_context_header(file_path: str, frontmatter: dict, h1_title: str | None = None) -> str:
+    """Build document context header from available metadata."""
+    import os
+    
+    # Title extraction priority: frontmatter title -> h1_title -> filename
+    title = None
+    if 'title' in frontmatter and frontmatter['title']:
+        title = frontmatter['title']
+    elif h1_title:
+        title = h1_title
+    else:
+        # Use filename without extension
+        filename = os.path.basename(file_path)
+        title = os.path.splitext(filename)[0] if filename else "Unknown Document"
+    
+    lines = []
+    lines.append(f"[Document: {title}]")
+    lines.append(f"[Source: {file_path}]")
+    
+    # Tags from frontmatter
+    if 'tags' in frontmatter and frontmatter['tags']:
+        if isinstance(frontmatter['tags'], list):
+            tags_str = ", ".join(str(tag) for tag in frontmatter['tags'])
+        else:
+            tags_str = str(frontmatter['tags'])
+        lines.append(f"[Tags: {tags_str}]")
+    
+    # Category from frontmatter (category or status field)
+    category = None
+    if 'category' in frontmatter and frontmatter['category']:
+        category = frontmatter['category']
+    elif 'status' in frontmatter and frontmatter['status']:
+        category = frontmatter['status']
+    
+    if category:
+        lines.append(f"[Category: {category}]")
+    
+    lines.append("---")
+    return "\n".join(lines)
 
 
 def _content_hash(content: str) -> str:
