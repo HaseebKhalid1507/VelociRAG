@@ -263,9 +263,9 @@ def index(ctx, path: str, db: Optional[str], source: str, force: bool, no_graph:
                 
                 if graph_stats.get('success'):
                     click.echo(success("Graph build complete:"))
-                    click.echo(f"  Nodes: {graph_stats['final_nodes']}")
-                    click.echo(f"  Edges: {graph_stats['final_edges']}")
-                    click.echo(f"  Time: {graph_stats['duration_seconds']:.1f}s")
+                    click.echo(f"  Nodes: {graph_stats.get('final_nodes', 'N/A')}")
+                    click.echo(f"  Edges: {graph_stats.get('final_edges', 'N/A')}")
+                    click.echo(f"  Time: {graph_stats.get('duration_seconds', 0):.1f}s")
                     
                     if not no_metadata and 'metadata' in graph_stats.get('stages', {}):
                         meta_stats = graph_stats['stages']['metadata']

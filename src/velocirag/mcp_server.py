@@ -274,8 +274,8 @@ def index(directory: str, build_graph: bool = True, extract_metadata: bool = Tru
                 graph_stats = pipeline.build(str(dir_path), force_rebuild=False)
                 
                 if graph_stats.get('success'):
-                    result['graph_nodes'] = graph_stats['final_nodes']
-                    result['graph_edges'] = graph_stats['final_edges']
+                    result['graph_nodes'] = graph_stats.get('final_nodes', 0)
+                    result['graph_edges'] = graph_stats.get('final_edges', 0)
                     
                     # Re-initialize engine to pick up new graph/metadata
                     _engine_ready.clear()

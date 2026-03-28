@@ -123,7 +123,16 @@ class GraphPipeline:
                 return self.update_incremental(changed_files, deleted_files, source_name=source_name)
             else:
                 logger.info("No changes detected, skipping build")
-                return {'success': True, 'incremental': True, 'changes': False}
+                # Count existing graph stats for the return
+                try:
+                    with self.graph_store._connect() as conn:
+                        n_nodes = conn.execute('SELECT COUNT(*) FROM nodes').fetchone()[0]
+                        n_edges = conn.execute('SELECT COUNT(*) FROM edges').fetchone()[0]
+                except Exception:
+                    n_nodes, n_edges = 0, 0
+                return {'success': True, 'incremental': True, 'changes': False,
+                        'final_nodes': n_nodes, 'final_edges': n_edges,
+                        'duration_seconds': 0.0}
         
         if force_rebuild:
             logger.info("Force rebuild: clearing existing graph")
@@ -926,6 +935,14 @@ class GraphPipeline:
                 if not all_changed_files:
                     stats['files_updated'] = 0
                     stats['success'] = True
+                    try:
+                        n_nodes = conn.execute('SELECT COUNT(*) FROM nodes').fetchone()[0]
+                        n_edges = conn.execute('SELECT COUNT(*) FROM edges').fetchone()[0]
+                    except Exception:
+                        n_nodes, n_edges = 0, 0
+                    stats['final_nodes'] = n_nodes
+                    stats['final_edges'] = n_edges
+                    stats['duration_seconds'] = 0.0
                     return stats
                 
                 # Read content and build nodes for changed files
@@ -1112,6 +1129,14 @@ class GraphPipeline:
         
         duration = (datetime.now() - start_time).total_seconds()
         stats['duration_seconds'] = duration
+        stats['success'] = True
+        try:
+            with self.graph_store._connect() as conn:
+                stats['final_nodes'] = conn.execute('SELECT COUNT(*) FROM nodes').fetchone()[0]
+                stats['final_edges'] = conn.execute('SELECT COUNT(*) FROM edges').fetchone()[0]
+        except Exception:
+            stats['final_nodes'] = stats.get('nodes_added', 0)
+            stats['final_edges'] = stats.get('edges_added', 0)
         
         logger.info(f"Incremental update completed in {duration:.1f}s: "
                    f"{stats['nodes_added']} nodes, {stats['edges_added']} edges")
