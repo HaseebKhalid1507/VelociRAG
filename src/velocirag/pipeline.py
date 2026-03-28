@@ -991,8 +991,13 @@ class GraphPipeline:
 
                 # Reload all current nodes/edges for full-corpus lookups
                 # Must use same conn — opening a new connection deadlocks SQLite
-                all_nodes = self._load_all_nodes(conn)
-                existing_edges = self._load_all_edges(conn)
+                # Use lightweight indexes to save memory - analyzers mostly need lookups, not full content
+                node_index = self._load_node_index(conn)  # {id: (type, title)}
+                edge_index = self._load_edge_index(conn)  # [(source_id, target_id, type)]
+                
+                # Force garbage collection of any previous full node loads
+                gc.collect()
+                logger.info(f"Loaded lightweight indexes: {len(node_index)} nodes, {len(edge_index)} edges (no content)")
                 changed_files_set = set(all_changed_files)
 
                 new_nodes: List[Node] = []
@@ -1012,10 +1017,14 @@ class GraphPipeline:
                     per_file_nodes: List[Node] = list(file_changed_nodes)
                     per_file_edges: List[Edge] = []
 
+                    # Convert lightweight indexes to minimal Node/Edge objects for analyzer compatibility
+                    lightweight_nodes = self._node_index_to_lightweight_nodes(node_index)
+                    lightweight_edges = self._edge_index_to_lightweight_edges(edge_index)
+
                     # 1. Explicit (wikilinks, tags)
                     try:
                         en, ee = self.explicit_analyzer.analyze_incremental(
-                            file_changed_nodes, all_nodes, existing_edges, {file_path})
+                            file_changed_nodes, lightweight_nodes, lightweight_edges, {file_path})
                         per_file_nodes.extend(en)
                         per_file_edges.extend(ee)
                     except Exception as e:
@@ -1025,7 +1034,7 @@ class GraphPipeline:
                     if self.entity_analyzer:
                         try:
                             en, ee = self.entity_analyzer.analyze_incremental(
-                                file_changed_nodes, all_nodes, existing_edges, {file_path})
+                                file_changed_nodes, lightweight_nodes, lightweight_edges, {file_path})
                             per_file_nodes.extend(en)
                             per_file_edges.extend(ee)
                         except Exception as e:
@@ -1034,7 +1043,7 @@ class GraphPipeline:
                     # 3. Temporal
                     try:
                         en, ee = self.temporal_analyzer.analyze_incremental(
-                            file_changed_nodes, all_nodes, existing_edges, {file_path})
+                            file_changed_nodes, lightweight_nodes, lightweight_edges, {file_path})
                         per_file_nodes.extend(en)
                         per_file_edges.extend(ee)
                     except Exception as e:
@@ -1044,8 +1053,10 @@ class GraphPipeline:
                     if self.semantic_analyzer:
                         try:
                             self.semantic_analyzer.embedder = _embedder
+                            # Semantic analyzer needs full content - load only note nodes from DB for comparison
+                            existing_note_nodes = self._load_note_nodes_for_semantic(conn)
                             en, ee = self.semantic_analyzer.analyze_incremental(
-                                file_changed_nodes, all_nodes, existing_edges, {file_path})
+                                file_changed_nodes, existing_note_nodes, lightweight_edges, {file_path})
                             per_file_nodes.extend(en)
                             per_file_edges.extend(ee)
                         except Exception as e:
@@ -1069,9 +1080,13 @@ class GraphPipeline:
                 # 5. TopicAnalyzer — full rebuild, runs once over all nodes
                 if self.topic_analyzer:
                     try:
-                        final_all_nodes = all_nodes + new_nodes
+                        # Topic analyzer needs full content - load all note nodes for topic analysis
+                        all_note_nodes = self._load_note_nodes_for_topics(conn)
+                        final_all_note_nodes = all_note_nodes + [n for n in new_nodes if n.type == NodeType.NOTE]
+                        # Convert edge index to lightweight edges for compatibility
+                        final_all_edges = self._edge_index_to_lightweight_edges(edge_index) + new_edges
                         en, ee = self.topic_analyzer.analyze_incremental(
-                            changed_nodes, final_all_nodes, existing_edges + new_edges, changed_files_set)
+                            changed_nodes, final_all_note_nodes, final_all_edges, changed_files_set)
                         # Topic nodes/edges aren't file-specific — leave source_file unset
                         new_nodes.extend(en)
                         new_edges.extend(ee)
@@ -1080,10 +1095,14 @@ class GraphPipeline:
 
                 # 6. CentralityAnalyzer — runs last over final edge state
                 try:
-                    final_all_nodes = all_nodes + new_nodes
-                    final_all_edges = existing_edges + new_edges
+                    # Convert indexes to lightweight objects for centrality analyzer
+                    lightweight_nodes = self._node_index_to_lightweight_nodes(node_index)
+                    lightweight_nodes.extend(new_nodes)  # Add new nodes from this session
+                    
+                    final_all_edges = self._edge_index_to_lightweight_edges(edge_index) + new_edges
+                    
                     en, ee = self.centrality_analyzer.analyze_incremental(
-                        changed_nodes, final_all_nodes, final_all_edges, changed_files_set)
+                        changed_nodes, lightweight_nodes, final_all_edges, changed_files_set)
                     new_nodes.extend(en)
                     new_edges.extend(ee)
                 except Exception as e:
@@ -1157,6 +1176,11 @@ class GraphPipeline:
             ))
         return nodes
 
+    def _load_node_index(self, conn) -> Dict[str, Tuple[str, str]]:
+        """Load lightweight node index: {node_id: (type, title)} — no content."""
+        rows = conn.execute('SELECT id, type, title FROM nodes').fetchall()
+        return {r[0]: (r[1], r[2]) for r in rows}
+
     def _load_all_edges(self, conn) -> List[Edge]:
         """Load all edges using an existing connection (avoids deadlock inside transactions)."""
         rows = conn.execute(
@@ -1170,6 +1194,73 @@ class GraphPipeline:
                 id=id_val, source_id=src, target_id=tgt,
                 type=RelationType(type_val), weight=weight, confidence=conf,
                 metadata=metadata, created_at=created_at
+            ))
+        return edges
+
+    def _load_edge_index(self, conn) -> List[Tuple[str, str, str]]:
+        """Load lightweight edge index: [(source_id, target_id, type)] — no metadata."""
+        return conn.execute('SELECT source_id, target_id, type FROM edges').fetchall()
+    
+    def _load_note_nodes_for_semantic(self, conn) -> List[Node]:
+        """Load only note nodes with content for semantic analysis."""
+        rows = conn.execute('''
+            SELECT id, type, title, content, metadata, created_at 
+            FROM nodes 
+            WHERE type = ?
+        ''', (NodeType.NOTE.value,)).fetchall()
+        nodes = []
+        for id_val, type_val, title, content, metadata_json, created_at_iso in rows:
+            metadata = json.loads(metadata_json) if metadata_json else {}
+            created_at = datetime.fromisoformat(created_at_iso) if created_at_iso else None
+            nodes.append(Node(
+                id=id_val, type=NodeType(type_val), title=title,
+                content=content, metadata=metadata, created_at=created_at
+            ))
+        return nodes
+    
+    def _load_note_nodes_for_topics(self, conn) -> List[Node]:
+        """Load only note nodes with content for topic analysis."""
+        rows = conn.execute('''
+            SELECT id, type, title, content, metadata, created_at 
+            FROM nodes 
+            WHERE type = ?
+        ''', (NodeType.NOTE.value,)).fetchall()
+        nodes = []
+        for id_val, type_val, title, content, metadata_json, created_at_iso in rows:
+            metadata = json.loads(metadata_json) if metadata_json else {}
+            created_at = datetime.fromisoformat(created_at_iso) if created_at_iso else None
+            nodes.append(Node(
+                id=id_val, type=NodeType(type_val), title=title,
+                content=content, metadata=metadata, created_at=created_at
+            ))
+        return nodes
+
+    def _node_index_to_lightweight_nodes(self, node_index: Dict[str, Tuple[str, str]]) -> List[Node]:
+        """Convert lightweight node index to minimal Node objects for analyzer compatibility."""
+        nodes = []
+        for node_id, (node_type, node_title) in node_index.items():
+            nodes.append(Node(
+                id=node_id,
+                type=NodeType(node_type),
+                title=node_title,
+                content=None,  # No content in lightweight version
+                metadata={}
+            ))
+        return nodes
+
+    def _edge_index_to_lightweight_edges(self, edge_index: List[Tuple[str, str, str]]) -> List[Edge]:
+        """Convert lightweight edge index to minimal Edge objects for analyzer compatibility."""
+        edges = []
+        for source_id, target_id, edge_type in edge_index:
+            edge_id = f"{edge_type}_{source_id}_{target_id}"
+            edges.append(Edge(
+                id=edge_id,
+                source_id=source_id,
+                target_id=target_id,
+                type=RelationType(edge_type),
+                weight=1.0,
+                confidence=1.0,
+                metadata={}
             ))
         return edges
 
