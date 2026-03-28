@@ -355,3 +355,171 @@ def _extract_parent_header(chunk_text: str, h1_title: Optional[str]) -> Optional
             return match.group(2).strip()
     
     return h1_title
+
+
+def hybrid_chunk_markdown(content: str, file_path: str, embedder,
+                          semantic_threshold: float = 25.0,
+                          large_section_threshold: int = 1500,
+                          min_chunk_size: int = 100, 
+                          max_chunk_size: int = 4000) -> list[dict]:
+    """
+    Hybrid chunking combining header-based and semantic splitting.
+    
+    1. Run chunk_markdown() first — get header-based chunks with CCH
+    2. For each chunk, check body size (content after the `---` CCH separator)
+    3. If body size > large_section_threshold:
+       - Extract the body content (after CCH header)
+       - Run semantic boundary detection on it
+       - If semantic splitting produces 2+ sub-chunks, split it
+       - Re-apply the SAME CCH header to each sub-chunk
+       - Preserve the original section name in metadata, add sub-index
+    4. If body size <= threshold: keep the chunk as-is
+    5. Return all chunks in the same dict format as chunk_markdown()
+    
+    Args:
+        content: Raw markdown content (may include YAML frontmatter)
+        file_path: File path for metadata
+        embedder: Embedder instance for semantic boundary detection
+        semantic_threshold: Boundary threshold for semantic splitting (lower = fewer splits)
+        large_section_threshold: Min body size in chars to consider for semantic splitting
+        min_chunk_size: Merge semantic sub-chunks smaller than this
+        max_chunk_size: Split semantic sub-chunks larger than this
+        
+    Returns:
+        List of chunk dictionaries with same schema as chunk_markdown()
+    """
+    # Handle empty content
+    if not content or not content.strip():
+        return []
+    
+    # Handle missing embedder - fall back to pure header-based
+    if embedder is None:
+        logger.debug("No embedder provided, falling back to header-based chunking")
+        return chunk_markdown(content, file_path)
+    
+    # Step 1: Get header-based chunks first
+    header_chunks = chunk_markdown(content, file_path)
+    
+    # If no chunks or chunking failed, return as-is
+    if not header_chunks:
+        return header_chunks
+    
+    hybrid_chunks = []
+    
+    # Step 2: Process each header chunk
+    for chunk in header_chunks:
+        chunk_content = chunk['content']
+        
+        # Extract body content after CCH header (after the "---" separator)
+        cch_separator = "---"
+        if cch_separator in chunk_content:
+            parts = chunk_content.split(cch_separator, 1)
+            if len(parts) == 2:
+                cch_header = parts[0] + cch_separator
+                body_content = parts[1].strip()
+            else:
+                # No proper CCH header structure
+                cch_header = ""
+                body_content = chunk_content.strip()
+        else:
+            # No CCH header (shouldn't happen with current chunker, but handle gracefully)
+            cch_header = ""
+            body_content = chunk_content.strip()
+        
+        # Step 3: Check if body is large enough for semantic splitting
+        if len(body_content) <= large_section_threshold:
+            # Small section - keep as-is
+            hybrid_chunks.append(chunk)
+            continue
+        
+        # Step 4: Try semantic splitting on the body content
+        try:
+            # Split body into sentences
+            sentences = split_sentences(body_content)
+            
+            # Need at least 5 sentences for meaningful semantic splitting
+            if len(sentences) < MIN_SENTENCES_FOR_SEMANTIC:
+                logger.debug(f"Too few sentences ({len(sentences)}) in large section, keeping as-is")
+                hybrid_chunks.append(chunk)
+                continue
+            
+            # Calculate similarity scores between sentences
+            similarities = calculate_boundary_scores(sentences, embedder)
+            if not similarities:
+                logger.debug("Failed to calculate similarities, keeping section as-is")
+                hybrid_chunks.append(chunk)
+                continue
+            
+            # Find semantic boundaries
+            boundaries = find_semantic_boundaries(similarities, method='percentile', threshold=semantic_threshold)
+            
+            # If only 2 boundaries (start and end), no meaningful split was found
+            if len(boundaries) <= 2:
+                logger.debug("No meaningful semantic boundaries found, keeping as-is")
+                hybrid_chunks.append(chunk)
+                continue
+            
+            # Step 5: Create sub-chunks from boundaries
+            sub_chunks = []
+            for i in range(len(boundaries) - 1):
+                start_idx = boundaries[i]
+                end_idx = boundaries[i + 1]
+                sub_sentences = sentences[start_idx:end_idx]
+                
+                if not sub_sentences:
+                    continue
+                
+                sub_body_text = ' '.join(sub_sentences)
+                sub_chunks.append(sub_body_text)
+            
+            # Merge small sub-chunks and split large ones
+            if sub_chunks:
+                sub_chunks = _merge_small_chunks(sub_chunks, min_chunk_size)
+                sub_chunks = _split_large_chunks(sub_chunks, max_chunk_size, sentences)
+            
+            # If semantic splitting didn't improve things (still 1 chunk), keep original
+            if len(sub_chunks) <= 1:
+                logger.debug("Semantic splitting didn't create meaningful divisions")
+                hybrid_chunks.append(chunk)
+                continue
+            
+            # Step 6: Create final chunk objects with CCH headers
+            original_section = chunk['metadata']['section']
+            
+            for idx, sub_body in enumerate(sub_chunks, 1):
+                # Re-apply the same CCH header to each sub-chunk
+                sub_content = cch_header + "\n" + sub_body.strip() if cch_header else sub_body.strip()
+                
+                # Create section name for sub-chunk
+                sub_section_name = f"{original_section} (part {idx})"
+                
+                # Use first sentence of sub-chunk (truncated) as fallback section name
+                first_sentence = sub_body.split('.')[0].strip()
+                if len(first_sentence) > 50:
+                    first_sentence = first_sentence[:47] + "..."
+                if not first_sentence:
+                    first_sentence = sub_section_name
+                
+                # Copy metadata from parent chunk
+                sub_metadata = chunk['metadata'].copy()
+                sub_metadata['section'] = sub_section_name
+                sub_metadata['content_hash'] = _content_hash(sub_body.strip())
+                # Add hybrid chunking indicator
+                sub_metadata['hybrid_chunk'] = True
+                sub_metadata['parent_section'] = original_section
+                sub_metadata['part_number'] = idx
+                sub_metadata['total_parts'] = len(sub_chunks)
+                
+                sub_chunk = {
+                    'content': sub_content,
+                    'metadata': sub_metadata
+                }
+                
+                hybrid_chunks.append(sub_chunk)
+            
+        except Exception as e:
+            logger.warning(f"Semantic splitting failed for section '{chunk['metadata']['section']}': {e}")
+            # Keep original chunk on error
+            hybrid_chunks.append(chunk)
+    
+    return hybrid_chunks

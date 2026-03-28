@@ -11,6 +11,7 @@ from velocirag.semantic_chunker import (
     calculate_boundary_scores,
     find_semantic_boundaries,
     semantic_chunk_markdown,
+    hybrid_chunk_markdown,
     _merge_small_chunks,
     _split_large_chunks
 )
@@ -310,6 +311,266 @@ This talks about one topic. This sentence discusses another topic entirely."""
     # Should not have semantic_chunk flag (indicating fallback was used)
     for chunk in chunks:
         assert chunk['metadata'].get('semantic_chunk') != True
+
+
+# Hybrid chunking tests
+
+def test_hybrid_small_sections_unchanged():
+    """Sections under threshold pass through without semantic splitting."""
+    
+    content = """---
+title: Test Document
+---
+
+# Main Title
+
+## Small Section
+
+This is a small section with only a few sentences. It should pass through unchanged because it's under the large_section_threshold. We need to make this content longer so it exceeds the minimum file size for chunking which is 500 characters. This additional text ensures the document is large enough to be properly chunked by header-based splitting instead of being treated as a single full document.
+
+## Another Small Section  
+
+This is also small and should not be semantically split. Again we add more content here to make sure the overall document size is sufficient for header-based chunking to activate. The chunker needs enough content to recognize that this should be split into multiple sections rather than kept as one large chunk. Both sections should remain unchanged."""
+    
+    mock_embedder = Mock()
+    
+    # Set threshold high so these sections are considered small
+    chunks = hybrid_chunk_markdown(content, "test.md", mock_embedder, 
+                                 large_section_threshold=2000)
+    
+    # Should have original header-based chunks
+    assert len(chunks) == 2  # Two ## sections
+    
+    # None should be marked as hybrid chunks
+    for chunk in chunks:
+        assert chunk['metadata'].get('hybrid_chunk') != True
+        # Should not have part numbers
+        assert 'part_number' not in chunk['metadata']
+
+
+def test_hybrid_large_sections_split():
+    """Large sections with topic changes get sub-split."""
+    
+    # Create content with one large section containing multiple topics
+    content = """---
+title: Test Document
+---
+
+# Main Title
+
+## Large Section About Multiple Topics
+
+This section discusses machine learning extensively. Machine learning is a subset of artificial intelligence that focuses on algorithms and statistical models. Deep learning networks have revolutionized computer vision and natural language processing. Neural networks consist of interconnected nodes that process information in layers. Training these models requires large datasets and significant computational resources. The field of AI continues to advance rapidly with new architectures and techniques being developed constantly.
+
+Now let's completely shift topics to cooking and culinary arts. Cooking is fundamentally different from machine learning and requires entirely different skills. Professional chefs must master various techniques including knife skills, temperature control, and flavor balancing. Understanding ingredients and their chemical interactions is crucial for creating exceptional dishes. Different cuisines from around the world offer unique approaches to combining flavors and textures. The art of cooking combines creativity with precise technical execution in the kitchen environment.
+
+This final paragraph returns to technology topics but focuses on databases and data storage. Relational databases use structured query language for data management. NoSQL databases offer flexibility for unstructured data storage solutions. Database optimization involves indexing strategies and query performance tuning. Modern applications often require distributed database architectures for scalability purposes."""
+    
+    mock_embedder = Mock()
+    
+    # Mock embeddings to show topic changes: ML, cooking, databases
+    embeddings = np.array([
+        [1.0, 0.0, 0.0],  # ML sentences (similar to each other)
+        [0.9, 0.1, 0.0],
+        [0.8, 0.2, 0.0],
+        [0.85, 0.15, 0.0],
+        [0.9, 0.1, 0.0],
+        [0.8, 0.2, 0.0],
+        [0.0, 1.0, 0.0],  # Cooking sentences (different topic)
+        [0.1, 0.9, 0.0],
+        [0.0, 0.8, 0.2],
+        [0.1, 0.9, 0.0],
+        [0.05, 0.95, 0.0],
+        [0.0, 0.1, 0.9],  # Database sentences (third topic)
+        [0.1, 0.0, 1.0],
+        [0.0, 0.05, 0.95],
+        [0.2, 0.0, 0.8],
+    ])
+    mock_embedder.embed.return_value = embeddings
+    
+    # Set threshold low so the section is considered large
+    chunks = hybrid_chunk_markdown(content, "test.md", mock_embedder, 
+                                 large_section_threshold=500)
+    
+    # Should create multiple sub-chunks from the large section
+    assert len(chunks) > 1
+    
+    # At least some should be marked as hybrid chunks
+    hybrid_chunks = [c for c in chunks if c['metadata'].get('hybrid_chunk')]
+    assert len(hybrid_chunks) > 0
+    
+    # Check hybrid chunk metadata
+    for chunk in hybrid_chunks:
+        assert chunk['metadata']['hybrid_chunk'] == True
+        assert 'parent_section' in chunk['metadata']
+        assert 'part_number' in chunk['metadata']
+        assert 'total_parts' in chunk['metadata']
+        assert chunk['metadata']['parent_section'] == "Large Section About Multiple Topics"
+
+
+def test_hybrid_preserves_cch_headers():
+    """All sub-chunks get the same CCH header as parent."""
+    
+    content = """---
+title: Hybrid Test
+tags: [test, hybrid]
+category: testing
+---
+
+# Document Title
+
+## Large Mixed Section
+
+First topic about programming languages and software development in general. Python is a versatile programming language that supports multiple paradigms. JavaScript runs in browsers and servers with excellent performance characteristics. Each language has unique syntax and features that make it suitable for different applications. Programming languages continue to evolve with new features and improvements.
+
+Second topic about cooking recipes and culinary arts which is completely different. Pasta requires boiling water and salt for proper preparation techniques. Different sauces complement various pasta shapes in Italian cuisine. Italian cuisine emphasizes fresh ingredients and traditional preparation methods. Professional chefs spend years mastering these complex culinary techniques and flavor combinations."""
+    
+    mock_embedder = Mock()
+    
+    # Different topics should split
+    embeddings = np.array([
+        [1.0, 0.0],  # Programming sentences
+        [0.9, 0.1],
+        [0.8, 0.2],
+        [0.0, 1.0],  # Cooking sentences  
+        [0.1, 0.9],
+        [0.0, 0.8],
+    ])
+    mock_embedder.embed.return_value = embeddings
+    
+    chunks = hybrid_chunk_markdown(content, "test.md", mock_embedder, 
+                                 large_section_threshold=100)
+    
+    # Should have multiple chunks
+    assert len(chunks) > 1
+    
+    # All chunks should have identical CCH headers
+    for chunk in chunks:
+        content_text = chunk['content']
+        assert '[Document: Hybrid Test]' in content_text
+        assert '[Source: test.md]' in content_text
+        assert '[Tags: test, hybrid]' in content_text
+        assert '[Category: testing]' in content_text
+        assert '---' in content_text
+        
+        # Should preserve CCH flag
+        assert chunk['metadata']['has_context_header'] == True
+
+
+def test_hybrid_metadata_inheritance():
+    """Sub-chunks inherit parent metadata with part numbering."""
+    
+    content = """---
+title: Parent Doc
+status: active
+project: hybrid-test
+---
+
+# Main Title
+
+## Section To Split
+
+Topic one covers artificial intelligence and machine learning concepts in great detail. This includes neural networks, deep learning architectures, and various AI applications across industries. The field continues to evolve rapidly with new breakthroughs happening frequently.
+
+Topic two discusses cooking techniques and culinary arts extensively. This covers knife skills, cooking methods, ingredient selection, and recipe development. Professional chefs require years of training to master these complex skills."""
+    
+    mock_embedder = Mock()
+    
+    # Two different topics
+    embeddings = np.array([
+        [1.0, 0.0],  # AI topic
+        [0.9, 0.1],
+        [0.8, 0.2],
+        [0.0, 1.0],  # Cooking topic
+        [0.1, 0.9],
+        [0.0, 0.8],
+    ])
+    mock_embedder.embed.return_value = embeddings
+    
+    chunks = hybrid_chunk_markdown(content, "test.md", mock_embedder, 
+                                 large_section_threshold=200)
+    
+    # Find the hybrid sub-chunks
+    hybrid_chunks = [c for c in chunks if c['metadata'].get('hybrid_chunk')]
+    assert len(hybrid_chunks) >= 2
+    
+    for chunk in hybrid_chunks:
+        metadata = chunk['metadata']
+        
+        # Should inherit frontmatter
+        assert metadata['frontmatter']['title'] == 'Parent Doc'
+        assert metadata['frontmatter']['status'] == 'active'
+        assert metadata['frontmatter']['project'] == 'hybrid-test'
+        
+        # Should have hybrid-specific metadata
+        assert metadata['hybrid_chunk'] == True
+        assert metadata['parent_section'] == 'Section To Split'
+        assert 'part_number' in metadata
+        assert 'total_parts' in metadata
+        assert metadata['part_number'] >= 1
+        assert metadata['total_parts'] >= 2
+        
+        # Section name should indicate part
+        assert "(part" in metadata['section']
+        assert metadata['section'].startswith('Section To Split (part')
+
+
+def test_hybrid_no_embedder_fallback():
+    """Without embedder, falls back to pure header-based chunking."""
+    
+    content = """# Test Document
+
+## Large Section  
+
+This is a very large section that would normally be considered for semantic splitting. It contains multiple sentences and topics. However, without an embedder, it should fall back to header-based chunking and remain as a single chunk."""
+    
+    # No embedder provided
+    chunks = hybrid_chunk_markdown(content, "test.md", embedder=None)
+    
+    # Should get header-based chunks
+    assert len(chunks) >= 1
+    
+    # Should not have hybrid chunk markers
+    for chunk in chunks:
+        assert chunk['metadata'].get('hybrid_chunk') != True
+
+
+def test_hybrid_preserves_existing_chunks():
+    """Small sections and single-topic sections pass through unchanged."""
+    
+    content = """# Test Document
+
+## Small Section One
+Short content here.
+
+## Small Section Two  
+Also short content.
+
+## Large Single Topic Section
+This section is large enough to trigger semantic analysis but discusses only one coherent topic throughout. Every sentence relates to machine learning and artificial intelligence concepts. The content maintains thematic consistency across all sentences. Neural networks and deep learning continue to be the main focus. All discussion points relate to the same domain of AI research and development."""
+    
+    mock_embedder = Mock()
+    
+    # All sentences about same topic (identical embeddings)
+    embeddings = np.array([
+        [1.0, 0.0],  # All sentences identical (perfect similarity)
+        [1.0, 0.0],
+        [1.0, 0.0],
+        [1.0, 0.0],
+        [1.0, 0.0],
+        [1.0, 0.0],
+    ])
+    mock_embedder.embed.return_value = embeddings
+    
+    chunks = hybrid_chunk_markdown(content, "test.md", mock_embedder, 
+                                 large_section_threshold=300)
+    
+    # Should have header-based chunks for all sections
+    assert len(chunks) == 3  # Three ## sections
+    
+    # None should be marked as hybrid chunks (small sections + single topic)
+    for chunk in chunks:
+        assert chunk['metadata'].get('hybrid_chunk') != True
 
 
 if __name__ == "__main__":
