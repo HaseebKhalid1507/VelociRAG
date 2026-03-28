@@ -19,3 +19,6 @@ embedding_cache.json
 data/mikoshi/*.bak
 :memory:/
 knowledge_graph.db
+.mcpregistry_github_token
+.mcpregistry_registry_token
+server.json.bak
