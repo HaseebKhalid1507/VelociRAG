@@ -691,10 +691,9 @@ class VectorStore:
                     self._faiss_l0_index = None
                     self._faiss_l1_index = None
                 self._index_dirty = False
-                return
+                # Don't return — fall through to save empty/fresh indices to disk
             
-            # Detect dimensions from first row if needed
-            if self._dimensions is None:
+            elif self._dimensions is None:
                 first_row = conn.execute(
                     'SELECT embedding FROM documents LIMIT 1'
                 ).fetchone()
@@ -760,36 +759,24 @@ class VectorStore:
                 del batch_embeddings, batch_array, batch_l0, batch_l1, batch_ids, rows
             conn.commit()
         
-        # Save all indices to disk
-        if self._faiss_index and self._faiss_index.ntotal > 0:
-            temp_path = str(self.faiss_path) + '.tmp'
-            try:
-                faiss.write_index(self._faiss_index, temp_path)
-                os.replace(temp_path, str(self.faiss_path))
-            except Exception:
-                if os.path.exists(temp_path):
-                    os.remove(temp_path)
-                raise
-        
-        if self._faiss_l0_index and self._faiss_l0_index.ntotal > 0:
-            temp_path = str(self.faiss_l0_path) + '.tmp'
-            try:
-                faiss.write_index(self._faiss_l0_index, temp_path)
-                os.replace(temp_path, str(self.faiss_l0_path))
-            except Exception:
-                if os.path.exists(temp_path):
-                    os.remove(temp_path)
-                raise
-        
-        if self._faiss_l1_index and self._faiss_l1_index.ntotal > 0:
-            temp_path = str(self.faiss_l1_path) + '.tmp'
-            try:
-                faiss.write_index(self._faiss_l1_index, temp_path)
-                os.replace(temp_path, str(self.faiss_l1_path))
-            except Exception:
-                if os.path.exists(temp_path):
-                    os.remove(temp_path)
-                raise
+        # Save all indices to disk (including empty indices — clears stale files)
+        for idx, idx_path in [
+            (self._faiss_index, self.faiss_path),
+            (self._faiss_l0_index, self.faiss_l0_path),
+            (self._faiss_l1_index, self.faiss_l1_path),
+        ]:
+            if idx is not None:
+                temp_path = str(idx_path) + '.tmp'
+                try:
+                    faiss.write_index(idx, temp_path)
+                    os.replace(temp_path, str(idx_path))
+                except Exception:
+                    if os.path.exists(temp_path):
+                        os.remove(temp_path)
+                    raise
+            elif os.path.exists(str(idx_path)):
+                # No index but stale file exists — remove it
+                os.remove(str(idx_path))
         
         self._index_dirty = False
         self._store_metadata('index_format_version', str(INDEX_FORMAT_VERSION))
@@ -1137,8 +1124,15 @@ class VectorStore:
                 VALUES (?, ?, ?)
             ''', (cache_key, mtime, source_name))
 
-    def _remove_file_chunks(self, rel_path: Path, source_name: str) -> None:
-        """Remove all chunks for a file."""
+    def _remove_file_chunks(self, rel_path: Path, source_name: str, conn=None) -> None:
+        """Remove all chunks for a file.
+        
+        Args:
+            rel_path: Relative file path
+            source_name: Source identifier
+            conn: Optional existing connection. If provided, caller manages the transaction.
+                  If None, opens its own transaction (backwards compatible).
+        """
         # Use doc_id prefix matching - much faster than JSON extraction
         # CRITICAL: Escape LIKE wildcards (% and _) in filenames.
         # Without this, files like "%.md" match EVERY doc_id.
@@ -1150,24 +1144,31 @@ class VectorStore:
         # Escape LIKE wildcards in the prefix, use \ as escape char
         escaped_prefix = prefix.replace('\\', '\\\\').replace('%', '\\%').replace('_', '\\_')
 
-        with self._transaction() as conn:
-            # Delete by doc_id prefix - uses index, no JSON parsing
-            conn.execute('''
+        def _do_delete(c):
+            c.execute('''
                 DELETE FROM documents WHERE doc_id LIKE ? ESCAPE '\\'
             ''', (escaped_prefix + '%',))
-
-            # Also delete from FTS5 table
-            conn.execute('''
+            c.execute('''
                 DELETE FROM chunks_fts WHERE doc_id LIKE ? ESCAPE '\\'
             ''', (escaped_prefix + '%',))
 
+        if conn is not None:
+            _do_delete(conn)
+        else:
+            with self._transaction() as txn:
+                _do_delete(txn)
+
     def _cleanup_deleted_files(self, base_path: Path, source_name: str) -> Tuple[int, List[str]]:
-        """Remove files from index that no longer exist. Returns (count, deleted_paths)."""
+        """Remove files from index that no longer exist. Returns (count, deleted_paths).
+        
+        Uses a single transaction for both reads and writes to avoid
+        SQLite lock contention between separate connections.
+        """
         deleted_count = 0
         deleted_paths: List[str] = []
         prefix = f"{source_name}::" if source_name else ""
         
-        with self._connect() as conn:
+        with self._transaction() as conn:
             # Get all cached files for this source
             if source_name:
                 rows = conn.execute('''
@@ -1185,8 +1186,8 @@ class VectorStore:
                 
                 full_path = base_path / rel_path
                 if not full_path.exists():
-                    # Remove file chunks and cache entry
-                    self._remove_file_chunks(Path(rel_path), source_name)
+                    # Remove file chunks and cache entry — same connection, no lock contention
+                    self._remove_file_chunks(Path(rel_path), source_name, conn=conn)
                     conn.execute('DELETE FROM file_cache WHERE cache_key = ?', (cache_key,))
                     deleted_count += 1
                     deleted_paths.append(str(full_path.resolve()))

@@ -14,7 +14,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 logger = logging.getLogger("velocirag.graph")
 
@@ -842,6 +842,63 @@ class GraphStore:
         except sqlite3.Error as e:
             raise GraphStoreError(f"Failed to remove node '{node_id}': {e}")
     
+    def remove_by_source_file(self, source_file: str) -> Tuple[int, int]:
+        """Remove all nodes and edges originating from a specific source file.
+        
+        Args:
+            source_file: Absolute file path that generated the nodes/edges
+            
+        Returns:
+            Tuple of (nodes_removed, edges_removed)
+        """
+        try:
+            with self._transaction() as conn:
+                # Remove edges first (referential integrity)
+                edge_result = conn.execute(
+                    'DELETE FROM edges WHERE source_file = ?', (source_file,)
+                )
+                edges_removed = edge_result.rowcount
+                
+                # Also remove edges pointing to/from nodes we're about to delete
+                node_ids = [row[0] for row in conn.execute(
+                    'SELECT id FROM nodes WHERE source_file = ?', (source_file,)
+                ).fetchall()]
+                
+                if node_ids:
+                    placeholders = ','.join('?' * len(node_ids))
+                    extra_edges = conn.execute(
+                        f'DELETE FROM edges WHERE source_id IN ({placeholders}) OR target_id IN ({placeholders})',
+                        node_ids + node_ids
+                    )
+                    edges_removed += extra_edges.rowcount
+                
+                # Remove nodes
+                node_result = conn.execute(
+                    'DELETE FROM nodes WHERE source_file = ?', (source_file,)
+                )
+                nodes_removed = node_result.rowcount
+                
+                # Clean up file provenance
+                conn.execute(
+                    'DELETE FROM file_provenance WHERE file_path = ?', (source_file,)
+                )
+                
+                # Prune orphan nodes (entities/topics with no remaining edges)
+                orphans = conn.execute('''
+                    DELETE FROM nodes WHERE id NOT IN (
+                        SELECT source_id FROM edges
+                        UNION
+                        SELECT target_id FROM edges
+                    ) AND type != 'note'
+                ''')
+                orphans_removed = orphans.rowcount
+                nodes_removed += orphans_removed
+                
+                return nodes_removed, edges_removed
+                
+        except sqlite3.Error as e:
+            raise GraphStoreError(f"Failed to remove data for source file '{source_file}': {e}")
+
     def stats(self) -> Dict[str, Any]:
         """
         Get comprehensive storage statistics.

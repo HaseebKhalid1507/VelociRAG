@@ -665,6 +665,56 @@ class MetadataStore:
         except sqlite3.Error as e:
             raise MetadataStoreError(f"Failed to get stats: {e}")
     
+    def remove_document(self, filename: str) -> bool:
+        """Remove a document and all related data (tags, cross-refs, usage log).
+        
+        Foreign key CASCADE handles junction table cleanup automatically.
+        Orphan tags (no remaining documents) are pruned.
+        
+        Args:
+            filename: Document filename to remove
+            
+        Returns:
+            True if document existed and was removed, False if not found
+        """
+        try:
+            with self._transaction() as conn:
+                conn.execute('PRAGMA foreign_keys = ON')
+                result = conn.execute(
+                    'DELETE FROM documents WHERE filename = ?', (filename,)
+                )
+                if result.rowcount > 0:
+                    # Prune orphan tags (no documents reference them)
+                    conn.execute('''
+                        DELETE FROM tags WHERE id NOT IN (
+                            SELECT DISTINCT tag_id FROM document_tags
+                        )
+                    ''')
+                return result.rowcount > 0
+        except sqlite3.Error as e:
+            raise MetadataStoreError(f"Failed to remove document '{filename}': {e}")
+
+    def remove_documents_by_prefix(self, prefix: str) -> int:
+        """Remove all documents matching a filename prefix.
+        
+        Useful for bulk cleanup when a source directory is removed.
+        
+        Args:
+            prefix: Filename prefix to match (e.g., 'mikoshi::')
+            
+        Returns:
+            Number of documents removed
+        """
+        try:
+            with self._transaction() as conn:
+                conn.execute('PRAGMA foreign_keys = ON')
+                result = conn.execute(
+                    'DELETE FROM documents WHERE filename LIKE ?', (prefix + '%',)
+                )
+                return result.rowcount
+        except sqlite3.Error as e:
+            raise MetadataStoreError(f"Failed to remove documents with prefix '{prefix}': {e}")
+
     def close(self) -> None:
         """Clean shutdown."""
         # No persistent connections to close

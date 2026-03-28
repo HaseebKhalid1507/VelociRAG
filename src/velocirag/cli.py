@@ -173,7 +173,36 @@ def index(ctx, path: str, db: Optional[str], source: str, force: bool, no_graph:
     # Check if directory contains markdown files
     md_files = list(path.rglob('*.md'))
     if not md_files:
-        click.echo(warning(f"No markdown files found in {path}"))
+        # No files — but there may be indexed files that were deleted.
+        # Run cleanup before exiting.
+        try:
+            store = VectorStore(str(db_path))
+            deleted_count, deleted_paths = store._cleanup_deleted_files(path, source)
+            if deleted_count > 0:
+                click.echo(f"No markdown files found. Cleaned up {deleted_count} deleted files.")
+                store.rebuild_index()
+                
+                # Cascade to metadata
+                if not no_metadata:
+                    try:
+                        meta_store = MetadataStore(str(db_path / "metadata.db"))
+                        for dpath in deleted_paths:
+                            meta_store.remove_document(Path(dpath).name)
+                    except Exception:
+                        pass
+                
+                # Cascade to graph
+                if not no_graph:
+                    try:
+                        graph_store = GraphStore(str(db_path / "graph.db"))
+                        for dpath in deleted_paths:
+                            graph_store.remove_by_source_file(dpath)
+                    except Exception:
+                        pass
+            else:
+                click.echo(warning(f"No markdown files found in {path}"))
+        except Exception:
+            click.echo(warning(f"No markdown files found in {path}"))
         return
     
     click.echo(f"Found {len(md_files)} markdown files")
@@ -213,6 +242,43 @@ def index(ctx, path: str, db: Optional[str], source: str, force: bool, no_graph:
         
         if stats.get('files_deleted', 0) > 0:
             click.echo(f"  Files cleaned up: {stats['files_deleted']}")
+            
+            # Cascade deletes to metadata and graph stores
+            deleted_paths = stats.get('deleted_file_paths', [])
+            if deleted_paths:
+                # Clean metadata store
+                if not no_metadata:
+                    try:
+                        metadata_db = db_path / "metadata.db"
+                        meta_store = MetadataStore(str(metadata_db))
+                        meta_cleaned = 0
+                        for dpath in deleted_paths:
+                            # Try both absolute path and relative filename
+                            fname = Path(dpath).name
+                            if meta_store.remove_document(fname):
+                                meta_cleaned += 1
+                        if meta_cleaned > 0 and verbose:
+                            click.echo(f"  Metadata cleaned: {meta_cleaned} documents")
+                    except Exception as e:
+                        if verbose:
+                            click.echo(warning(f"  Metadata cleanup failed: {e}"))
+                
+                # Clean graph store
+                if not no_graph:
+                    try:
+                        graph_db = db_path / "graph.db"
+                        graph_store = GraphStore(str(graph_db))
+                        total_nodes_cleaned = 0
+                        total_edges_cleaned = 0
+                        for dpath in deleted_paths:
+                            nodes_rm, edges_rm = graph_store.remove_by_source_file(dpath)
+                            total_nodes_cleaned += nodes_rm
+                            total_edges_cleaned += edges_rm
+                        if (total_nodes_cleaned or total_edges_cleaned) and verbose:
+                            click.echo(f"  Graph cleaned: {total_nodes_cleaned} nodes, {total_edges_cleaned} edges")
+                    except Exception as e:
+                        if verbose:
+                            click.echo(warning(f"  Graph cleanup failed: {e}"))
         
         # Get total stats
         store_stats = store.stats()
