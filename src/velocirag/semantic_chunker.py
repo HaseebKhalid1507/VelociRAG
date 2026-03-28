@@ -8,11 +8,11 @@ chunking when embedder is unavailable.
 
 import re
 import numpy as np
-from typing import Optional, Callable
+from typing import Optional
 import logging
 
 from .chunker import chunk_markdown, build_context_header, _content_hash, _sanitize_frontmatter
-from .chunker import MIN_FILE_SIZE_FOR_CHUNKING, MAX_CHUNK_SIZE, H1_SEARCH_WINDOW
+from .chunker import MIN_FILE_SIZE_FOR_CHUNKING, H1_SEARCH_WINDOW
 
 # Semantic chunking constants
 MIN_SENTENCES_FOR_SEMANTIC = 5  # Minimum sentences to attempt semantic chunking
