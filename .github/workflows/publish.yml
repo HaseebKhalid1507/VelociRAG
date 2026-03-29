@@ -1,4 +1,4 @@
-name: Publish to PyPI
+name: Publish
 
 on:
   release:
@@ -50,3 +50,28 @@ jobs:
           ssh_private_key: ${{ secrets.AUR_SSH_PRIVATE_KEY }}
           commit_message: "Update to ${{ github.event.release.tag_name }}"
           force_push: true
+
+  mcp-registry:
+    runs-on: ubuntu-latest
+    needs: publish
+    permissions:
+      id-token: write  # Required for GitHub OIDC auth
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download MCP Publisher
+        run: |
+          curl -L https://github.com/modelcontextprotocol/registry/releases/download/v1.5.0/mcp-publisher_linux_amd64.tar.gz | tar -xz
+          chmod +x mcp-publisher
+
+      - name: Update server.json version
+        run: |
+          VERSION="${{ github.event.release.tag_name }}"
+          VERSION="${VERSION#v}"  # Strip leading 'v'
+          sed -i "s/\"version\": \".*\"/\"version\": \"${VERSION}\"/" server.json
+
+      - name: Authenticate with MCP Registry
+        run: ./mcp-publisher login github-oidc
+
+      - name: Publish to MCP Registry
+        run: ./mcp-publisher publish
