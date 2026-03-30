@@ -274,12 +274,19 @@ class VelociragDaemon:
             if pid > 0:
                 os._exit(0)
                 
-            # Redirect stdin/stdout/stderr
+            # Redirect stdin/stdout/stderr to /dev/null.
+            # This runs inside the double-forked daemon child, so any
+            # dup2 failure leaves the process in an undefined state —
+            # exit immediately to avoid inheriting broken descriptors.
             devnull = open(os.devnull, 'r+')
-            os.dup2(devnull.fileno(), sys.stdin.fileno())
-            os.dup2(devnull.fileno(), sys.stdout.fileno())
-            os.dup2(devnull.fileno(), sys.stderr.fileno())
-            devnull.close()
+            try:
+                os.dup2(devnull.fileno(), sys.stdin.fileno())
+                os.dup2(devnull.fileno(), sys.stdout.fileno())
+                os.dup2(devnull.fileno(), sys.stderr.fileno())
+            except OSError:
+                os._exit(1)
+            finally:
+                devnull.close()
         
         # Start serving
         self._serve()
