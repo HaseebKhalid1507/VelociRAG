@@ -140,12 +140,16 @@ def extract_wiki_links(content: str) -> List[str]:
     return links
 
 
-def _normalize_frontmatter_values(data: Dict) -> Dict:
+def _normalize_frontmatter_values(data: Dict, _depth: int = 0) -> Dict:
     """
     Normalize frontmatter values for JSON compatibility.
     
     Converts datetime objects to ISO strings, handles other edge cases.
     """
+    if _depth > 10:
+        logger.warning("Frontmatter nesting depth exceeded limit; stopping recursion")
+        return data
+
     if not isinstance(data, dict):
         return data
     
@@ -159,7 +163,7 @@ def _normalize_frontmatter_values(data: Dict) -> Dict:
                 normalized[key] = str(value)
         elif isinstance(value, dict):
             # Recursive normalization for nested dicts
-            normalized[key] = _normalize_frontmatter_values(value)
+            normalized[key] = _normalize_frontmatter_values(value, _depth + 1)
         elif isinstance(value, list):
             # Normalize list items
             normalized[key] = [

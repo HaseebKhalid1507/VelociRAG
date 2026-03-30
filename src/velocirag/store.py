@@ -1042,7 +1042,10 @@ class VectorStore:
         if doc_count != faiss_count and doc_count > 0:
             logger.warning(f"Index inconsistency detected: {doc_count} docs, {faiss_count} vectors. Rebuilding.")
             self._index_dirty = True
-            self.rebuild_index()
+            try:
+                self.rebuild_index()
+            except Exception as e:
+                logger.error(f"Index rebuild failed during startup: {e}. Store may be inconsistent.")
 
     @contextmanager
     def _transaction(self):

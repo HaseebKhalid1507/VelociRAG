@@ -708,8 +708,10 @@ class MetadataStore:
         try:
             with self._transaction() as conn:
                 conn.execute('PRAGMA foreign_keys = ON')
+                escaped_prefix = prefix.replace('\\', '\\\\').replace('%', '\\%').replace('_', '\\_')
                 result = conn.execute(
-                    'DELETE FROM documents WHERE filename LIKE ?', (prefix + '%',)
+                    "DELETE FROM documents WHERE filename LIKE ? ESCAPE '\\'",
+                    (escaped_prefix + '%',)
                 )
                 return result.rowcount
         except sqlite3.Error as e:

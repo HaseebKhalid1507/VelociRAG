@@ -11,6 +11,7 @@ Combines Velocirag's clean architecture with production's battle-tested algorith
 """
 
 import logging
+import json
 import time
 import threading
 import re
@@ -311,7 +312,6 @@ class Searcher:
                                 continue
                             row = conn.execute('SELECT doc_id, content, metadata FROM documents WHERE faiss_idx = ?', (int(faiss_idx),)).fetchone()
                             if row:
-                                import json
                                 metadata = json.loads(row[2]) if row[2] else {}
                                 if not isinstance(metadata, dict):
                                     logger.warning(f"Invalid metadata type for doc {row[0]}: {type(metadata).__name__}")

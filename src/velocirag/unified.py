@@ -21,6 +21,11 @@ from .rrf import reciprocal_rank_fusion
 
 logger = logging.getLogger("velocirag.unified")
 
+# Default score assigned to keyword results with a missing BM25 rank.
+# FTS5 rank is always negative (lower = better), so 0 means no rank data —
+# assign a low score rather than the maximum.
+_DEFAULT_BM25_SCORE = 0.1
+
 
 class UnifiedSearchError(Exception):
     """Base exception for unified search failures."""
@@ -204,8 +209,8 @@ class UnifiedSearch:
                                         'score': conn.get('weight', 0.3),
                                         'source': f'word_{word}_{rel_type}'
                                     })
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        logger.debug(f"Graph connection query failed for word '{word}': {e}")
                 
                 # Strategy 3: Topic web if query looks topical
                 if len(query.split()) <= 3:  # Short queries might be topics
@@ -218,8 +223,8 @@ class UnifiedSearch:
                                     'score': node.get('connection_strength', 0.3),
                                     'source': 'topic_web'
                                 })
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        logger.debug(f"Graph topic-web query failed for '{query}': {e}")
                 
                 # Remove duplicates
                 seen_titles = set()
@@ -266,8 +271,12 @@ class UnifiedSearch:
             filename = result.get('file_path', '')
             if filename:
                 # FTS5 rank is negative (lower = better). Normalize to 0-1.
+                # A missing rank (0) is not a perfect match — assign a low default.
                 bm25_rank = result.get('bm25_rank', 0)
-                normalized_score = max(0.0, min(1.0, 1.0 + (bm25_rank / 50.0)))
+                if bm25_rank == 0:
+                    normalized_score = _DEFAULT_BM25_SCORE
+                else:
+                    normalized_score = max(0.0, min(1.0, 1.0 + (bm25_rank / 50.0)))
                 keyword_ranked.append({
                     'doc_id': filename,
                     'score': normalized_score,
@@ -359,20 +368,10 @@ class UnifiedSearch:
                     # Vector result or no valid vector filenames to compare — always keep
                     confirmed_results.append(fused_result)
                 else:
-                    # Graph-only candidate — verify it has some vector relevance
-                    # Search the vector results for any similarity to this doc
-                    has_vector_support = False
-                    for vr in vector_results:
-                        if self._extract_filename(vr) == filename:
-                            has_vector_support = True
-                            break
-                    
-                    if has_vector_support:
-                        confirmed_results.append(fused_result)
-                    else:
-                        # Check: does this doc appear ANYWHERE in a wider vector search?
-                        # Skip it — graph-only with no vector confirmation is noise
-                        logger.debug(f"Filtered graph-only candidate: {filename}")
+                    # Graph-only candidate with no vector confirmation — filter as noise.
+                    # vector_filenames already contains every filename from vector_results,
+                    # so if the check at line 356 failed, this candidate has no vector support.
+                    logger.debug(f"Filtered graph-only candidate: {filename}")
         else:
             # No filtering if we have no vector filenames to validate against
             confirmed_results = fused_results
