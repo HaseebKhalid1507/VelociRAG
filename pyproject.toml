@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "velocirag"
-version = "0.7.1"
+version = "0.7.2"
 description = "Lightning-fast RAG for AI agents. ONNX-powered, 4-layer fusion, MCP server. No PyTorch."
 readme = "README.md"
 license = {text = "MIT"}
@@ -69,4 +69,4 @@ pythonpath = ["src"]
 
 [tool.ruff]
 line-length = 100
-target-version = "py310"
+target-version = "0.7.2"
