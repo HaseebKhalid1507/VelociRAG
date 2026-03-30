@@ -293,6 +293,38 @@ Production deployment (3,400+ documents, 4 sources):
 - `pip install "velocirag[mcp]"` — MCP server (adds `fastmcp`)
 - `pip install "velocirag[ner]"` — GLiNER entity extraction (adds `gliner`, requires PyTorch)
 
+## 📚 References
+
+VelociRAG builds on these foundational works:
+
+**Core Fusion & Retrieval**
+> **Reciprocal Rank Fusion** — Cormack, G. V., Clarke, C. L. A., & Büttcher, S. (2009). "Reciprocal Rank Fusion outperforms Condorcet and individual Rank Learning Methods." _SIGIR '09_.  
+> Core fusion algorithm for merging results across retrieval layers.
+
+> **BM25** — Robertson, S. E., Walker, S., Jones, S., Hancock-Beaulieu, M., & Gatford, M. (1994). "Okapi at TREC-3." _TREC-3_.  
+> Keyword search foundation via SQLite FTS5.
+
+**Embeddings & Neural IR**
+> **Sentence-BERT** — Reimers, N., & Gurevych, I. (2019). "Sentence-BERT: Sentence Embeddings using Siamese BERT-Networks." _EMNLP 2019_. [paper](https://arxiv.org/abs/1908.10084)  
+> Dense embedding architecture using `all-MiniLM-L6-v2`.
+
+> **MiniLM** — Wang, W., Wei, F., Dong, L., Bao, H., Yang, N., & Zhou, M. (2020). "MiniLM: Deep Self-Attention Distillation for Task-Agnostic Compression of Pre-Trained Transformers." _NeurIPS 2020_. [paper](https://arxiv.org/abs/2002.10957)  
+> Efficient transformer distillation for production embedding models.
+
+**Reranking & Neural Models**
+> **Cross-Encoder Reranking** — Nogueira, R., & Cho, K. (2019). "Passage Re-ranking with BERT." _arXiv:1901.04085_. [paper](https://arxiv.org/abs/1901.04085)  
+> Cross-attention reranking with TinyBERT on MS MARCO.
+
+> **TinyBERT** — Jiao, X., et al. (2020). "TinyBERT: Distilling BERT for Natural Language Understanding." _Findings of EMNLP 2020_. [paper](https://arxiv.org/abs/1909.10351)  
+> Compressed BERT for fast reranking inference.
+
+**Vector Search & Systems**
+> **FAISS** — Johnson, J., Douze, M., & Jégou, H. (2019). "Billion-scale similarity search with GPUs." _IEEE Transactions on Big Data_. [paper](https://arxiv.org/abs/1702.08734)  
+> High-performance vector similarity search engine.
+
+> **GLiNER** — Zaratiana, U., Nzeyimana, A., & Holat, P. (2023). "GLiNER: Generalist Model for Named Entity Recognition using Bidirectional Transformer." _arXiv:2311.08526_. [paper](https://arxiv.org/abs/2311.08526)  
+> Generalist NER for knowledge graph entity extraction (optional dependency).
+
 ## 📄 License
 
 [MIT](LICENSE) — Use it anywhere, build anything.

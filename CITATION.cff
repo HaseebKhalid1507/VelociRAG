@@ -1,0 +1,22 @@
+cff-version: 1.2.0
+message: "If you use VelociRAG, please cite it as below."
+type: software
+title: VelociRAG
+version: 0.7.1
+date-released: '2026-03-20'
+url: "https://github.com/HaseebKhalid1507/VelociRAG"
+repository-code: "https://github.com/HaseebKhalid1507/VelociRAG"
+license: MIT
+authors:
+  - family-names: "Khalid"
+    given-names: "Haseeb"
+    github-username: "HaseebKhalid1507"
+keywords:
+  - rag
+  - retrieval-augmented-generation
+  - vector-search
+  - knowledge-graph
+  - mcp
+  - faiss
+  - bm25
+  - onnx
