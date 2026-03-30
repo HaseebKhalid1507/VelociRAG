@@ -11,7 +11,7 @@ fi
 cd ~/velocirag
 
 # Bump
-sed -i "s/version = \".*\"/version = \"$VERSION\"/" pyproject.toml
+sed -i "0,/^version = \".*\"/s/^version = \".*\"/version = \"$VERSION\"/" pyproject.toml
 sed -i "s/\"version\": \".*\"/\"version\": \"$VERSION\"/g" server.json
 git add -A && git commit -m "v${VERSION}: ${TITLE}" && git push
 
