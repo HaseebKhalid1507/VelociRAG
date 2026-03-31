@@ -263,16 +263,17 @@ Real benchmarks on [ByteByteGo/system-design-101](https://github.com/ByteByteGoH
 | **Install size** | ~80MB (no PyTorch) |
 | **RAM usage** | <1GB with all models loaded |
 
-Production deployment (3,400+ documents, 4 sources):
+Production deployment (6,300+ chunks, 3 sources, 950 files):
 
 | Metric | Value |
 |--------|-------|
-| **Embedding (warm)** | **3ms** |
-| **Embedding (cold)** | **184ms** |
-| **Full 4-layer search (warm)** | **76–350ms** |
+| **Full search (warm)** | **16ms avg, 2ms min** |
+| **Full search (first run)** | **22ms avg, 4ms min** |
+| **Search P50 / P95** | **17ms / 55ms** |
 | **Hit rate (100-query benchmark)** | **99/100** |
-| **Graph** | 3,740 nodes, 92,719 edges |
-| **Provenance** | 870 files across 4 sources |
+| **Graph** | 3,125 nodes, 132,320 edges |
+| **Reranker** | Cross-encoder TinyBERT via ONNX |
+| **RAM** | <1GB with all models loaded |
 
 ## ⚙️ Configuration
 
